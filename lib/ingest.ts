@@ -196,7 +196,7 @@ export async function ingest(project: ProjectRow, req: SendRequest): Promise<Ing
   }
 
   // ── origin gate: kills the "localhost frontend against prod backend" spam ──
-  const verdict = judgeOrigin(req.sourceOrigin);
+  const verdict = judgeOrigin(req.sourceOrigin, project.production_origins ?? []);
   if (!verdict.production) {
     // Recorded, not silently discarded — it must stay visible in the dashboard.
     await query(

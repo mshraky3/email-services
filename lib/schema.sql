@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Production hostnames for THIS project, checked in addition to the global
+-- PRODUCTION_ORIGINS env var.
+--
+-- Origins have to be per-project or the system does not scale: onboarding a new
+-- app would mean editing a gateway env var and redeploying the gateway, and
+-- until someone did, every email that app sent would be silently dropped as a
+-- non-production origin. Registering the project should be enough.
+ALTER TABLE projects ADD COLUMN IF NOT EXISTS production_origins TEXT[] NOT NULL DEFAULT '{}';
+
 CREATE TABLE IF NOT EXISTS api_keys (
   id           SERIAL PRIMARY KEY,
   project_id   INT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

@@ -52,6 +52,18 @@ export function isConfigured(): boolean {
   return Boolean(process.env.GMAIL_SMTP_USER && process.env.GMAIL_SMTP_PASS);
 }
 
+/**
+ * Release the SMTP socket.
+ *
+ * Only needed by one-shot CLI scripts: a lingering socket makes libuv abort on
+ * Windows during process teardown. The serverless runtime never calls this —
+ * the lambda is frozen, not exited.
+ */
+export function close(): void {
+  _transport?.close();
+  _transport = null;
+}
+
 export async function send(msg: OutboundMessage): Promise<SendResult> {
   // Gmail will rewrite the envelope sender to the authenticated account
   // regardless, so use it explicitly and keep only the display name from the

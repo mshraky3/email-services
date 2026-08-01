@@ -56,6 +56,7 @@ export interface ProjectRow {
   daily_max: number;
   monthly_max: number;
   allowed_transports: TransportName[];
+  production_origins: string[];
   dry_run: boolean;
   active: boolean;
 }

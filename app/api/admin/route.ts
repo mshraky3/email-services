@@ -48,18 +48,20 @@ export const POST = guard(async (req: Request) => {
       const project = await one<{ id: number }>(
         `INSERT INTO projects (slug, display_name, from_local_part, default_from_name, reply_to,
                                default_locale, default_dir, best_priority, daily_max, monthly_max,
-                               allowed_transports, dry_run)
+                               allowed_transports, dry_run, production_origins)
          VALUES ($1,$2,$3,$4,$5,
                  COALESCE($6,'ar'), COALESCE($7,'rtl'), COALESCE($8,1),
                  COALESCE($9,60), COALESCE($10,1500),
-                 COALESCE($11,'{resend,gmail}'), COALESCE($12,TRUE))
+                 COALESCE($11,'{resend,gmail}'), COALESCE($12,TRUE), COALESCE($13,'{}'))
          ON CONFLICT (slug) DO UPDATE SET
            display_name=EXCLUDED.display_name, from_local_part=EXCLUDED.from_local_part,
-           default_from_name=EXCLUDED.default_from_name, reply_to=EXCLUDED.reply_to
+           default_from_name=EXCLUDED.default_from_name, reply_to=EXCLUDED.reply_to,
+           production_origins=EXCLUDED.production_origins
          RETURNING id`,
         [slug, display_name, from_local_part, default_from_name, body.reply_to ?? null,
          body.default_locale, body.default_dir, body.best_priority,
-         body.daily_max, body.monthly_max, body.allowed_transports, body.dry_run],
+         body.daily_max, body.monthly_max, body.allowed_transports, body.dry_run,
+         body.production_origins ?? null],
       );
       const key = mintKey(slug);
       await query(
@@ -79,6 +81,14 @@ export const POST = guard(async (req: Request) => {
       // Deliberately does NOT revoke the old key: rotate, deploy, then revoke.
       return NextResponse.json({ ok: true, api_key: key.key, key_prefix: key.prefix, note: 'old keys still active — revoke separately once deployed' });
     }
+
+    case 'set_origins':
+      // Register a project's production hostnames. Anything not listed here
+      // (or in the global PRODUCTION_ORIGINS) is dropped as dev traffic, so
+      // this must be set when a project first deploys.
+      await query(`UPDATE projects SET production_origins = $2 WHERE slug = $1`,
+        [body.slug, body.production_origins ?? []]);
+      return NextResponse.json({ ok: true });
 
     case 'revoke_key':
       await query(`UPDATE api_keys SET revoked_at=NOW() WHERE key_prefix=$1 AND revoked_at IS NULL`, [body.key_prefix]);

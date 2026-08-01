@@ -3,6 +3,15 @@
   Give this file to any new project. It is all you need.
 ================================================================================
 
+  LIVE GATEWAY   https://email-services-nu.vercel.app
+  DASHBOARD      https://email-services-nu.vercel.app          (quota, queue, log)
+  HEALTH         https://email-services-nu.vercel.app/api/v1/health
+  SOURCE         https://github.com/mshraky3/email-services
+  SENDING DOMAIN smle-question-bank.com   (verified with Resend)
+
+  Already connected: medqize (SQB), hr, portfolio, game.
+  Ask the admin for your project's own key — never reuse another project's.
+
 WHAT THIS IS
   One service that sends email for every project. You do not install a mail
   library, you do not hold an API key for a mail provider, you do not write
@@ -29,7 +38,7 @@ THE BUDGET, HONESTLY
 --------------------------------------------------------------------------------
 Ask the gateway admin (that's you) to register the project:
 
-  curl -X POST https://<gateway>/api/admin \
+  curl -X POST https://email-services-nu.vercel.app/api/admin \
     -H "Authorization: Bearer $ADMIN_KEY" \
     -H "Content-Type: application/json" \
     -d '{
@@ -62,7 +71,7 @@ recovered.
 --------------------------------------------------------------------------------
 In your project's .env (gitignored):
 
-  EMAIL_GATEWAY_URL=https://<gateway>
+  EMAIL_GATEWAY_URL=https://email-services-nu.vercel.app
   EMAIL_GATEWAY_KEY=ek_live_myapp_xxxxxxxxxxxx
   EMAIL_GATEWAY_MODE=on
 
@@ -87,7 +96,7 @@ Every email your project sends needs a policy row. This is where priority,
 audience and digesting are decided — NOT in your code. Your code names an
 event; the gateway decides what that means.
 
-  curl -X POST https://<gateway>/api/admin \
+  curl -X POST https://email-services-nu.vercel.app/api/admin \
     -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \
     -d '{
       "action": "set_policy",
@@ -280,7 +289,7 @@ Add yours when you deploy, or your real mail gets dropped too.
 --------------------------------------------------------------------------------
 10. WHEN SOMETHING DOES NOT ARRIVE
 --------------------------------------------------------------------------------
-  Dashboard          https://<gateway>/            queue, quota, recent messages
+  Dashboard          https://email-services-nu.vercel.app/            queue, quota, recent messages
   One message        GET  /api/v1/messages/:id     status, provider id, events
   Health             GET  /api/v1/health           queue depth, oldest pending
   Quota              GET  /api/v1/quota            what is left, by priority

@@ -70,7 +70,15 @@ function configuredProductionHosts(): string[] {
  * would silently kill invoices and OTPs. The gate exists to stop browser-origin
  * dev traffic, so it only ever rejects an origin it can actually see.
  */
-export function judgeOrigin(rawOrigin: string | null | undefined): OriginVerdict {
+export function judgeOrigin(
+  rawOrigin: string | null | undefined,
+  /**
+   * Hostnames registered for the calling project, merged with the global
+   * allowlist. This is what lets a new app be onboarded without redeploying
+   * the gateway — see `projects.production_origins`.
+   */
+  projectOrigins: string[] = [],
+): OriginVerdict {
   const host = hostOf(rawOrigin);
   if (!host) return { production: true, host: null };
 
@@ -83,7 +91,10 @@ export function judgeOrigin(rawOrigin: string | null | undefined): OriginVerdict
     if (re.test(host) || re.test(bare)) return { production: false, host, reason };
   }
 
-  const allowed = configuredProductionHosts();
+  const allowed = [
+    ...configuredProductionHosts(),
+    ...projectOrigins.map((h) => hostOf(h)).filter((h): h is string => Boolean(h)),
+  ];
 
   // No allowlist configured: accept anything that is not obviously local. This
   // keeps a fresh deployment working before PRODUCTION_ORIGINS is filled in,
