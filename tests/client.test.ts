@@ -32,8 +32,6 @@ const jsonResponse = (status: number, body: unknown) =>
 
 describe('fallback must NOT happen on gateway decisions', () => {
   const mustNotFallBack: Array<[string, number, unknown]> = [
-    ['429 project_daily_cap', 429, { error: 'project_daily_cap' }],
-    ['503 quota_exhausted',   503, { error: 'quota_exhausted' }],
     ['400 validation',        400, { error: 'a valid `to` address is required' }],
     ['413 attachment too big',413, { error: 'attachment_too_large' }],
     ['401 unauthorized',      401, { error: 'unauthorized' }],
@@ -66,8 +64,10 @@ describe('fallback MUST happen when the gateway did not process the request', ()
     assert.equal(legacyCalls.length, 1);
   });
 
-  test('502/504 fall back', async () => {
-    for (const status of [502, 504]) {
+  test('502 falls back — the gateway tried and the transport failed', async () => {
+    // v3 has no quota refusal, so every 5xx now means "we could not deliver
+    // this", and the project's own sender is worth a shot.
+    for (const status of [502, 503, 504]) {
       const { client, legacyCalls } = clientWith(async () => jsonResponse(status, { error: 'bad gateway' }));
       await client.send({ to: 'a@b.com', subject: 'x', text: 'x' });
       assert.equal(legacyCalls.length, 1, `HTTP ${status} should fall back`);
@@ -76,10 +76,11 @@ describe('fallback MUST happen when the gateway did not process the request', ()
 });
 
 describe('success statuses are returned, never retried', () => {
-  for (const status of ['sent', 'queued', 'buffered', 'suppressed', 'dropped', 'duplicate']) {
+  // Only 'sent' actually put an email in flight; the rest are deliberate
+  // gateway decisions that must not be second-guessed by falling back.
+  for (const status of ['sent', 'suppressed', 'dropped', 'throttled', 'duplicate']) {
     test(`"${status}" is surfaced as a successful result`, async () => {
-      const code = status === 'queued' ? 202 : 200;
-      const { client, legacyCalls } = clientWith(async () => jsonResponse(code, { ok: true, status }));
+      const { client, legacyCalls } = clientWith(async () => jsonResponse(200, { ok: true, status }));
       const out: any = await client.send({ to: 'a@b.com', subject: 'x', text: 'x' });
       assert.equal(out.status, status);
       assert.equal(legacyCalls.length, 0, 'a success must not also hit the legacy sender');

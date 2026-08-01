@@ -2,23 +2,22 @@ import { NextResponse } from 'next/server';
 import { guard } from '@/lib/route.ts';
 import { authenticate } from '@/lib/auth.ts';
 import { ensureSchema } from '@/lib/db.ts';
-import { flushDeps, ingest, type SendRequest } from '@/lib/ingest.ts';
-import { flushDue } from '@/lib/digest.ts';
-import { maybeDrain } from '@/lib/queue.ts';
-import { normalizeSeverity, type DigestItem } from '@/lib/types.ts';
+import { maybeRetry, send, type SendRequest } from '@/lib/send.ts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 30;
 
 /**
- * POST /api/v1/notify — Tier B, structured events.
+ * POST /api/v1/notify — structured events, mostly owner-facing alerts.
  *
- * The caller sends structure, not HTML, because the gateway may need to MERGE
- * this event with others into a digest. You cannot merge pre-rendered HTML
- * bodies, which is the whole reason this endpoint exists alongside /send.
+ * You send fields rather than HTML and the gateway renders them, so a project
+ * never has to write email markup. Otherwise identical to /send: it goes out
+ * immediately.
  *
- * Use it for anything owner-facing. Use /send for user-facing mail whose
- * template already exists in the project.
+ * `dedupeKey` is the useful part here. Give an error alert a stable key and
+ * the event's cooldown swallows identical repeats, so one broken endpoint
+ * produces one email rather than forty-seven.
  */
 export const POST = guard(async (req: Request) => {
   await ensureSchema();
@@ -31,13 +30,11 @@ export const POST = guard(async (req: Request) => {
     to: string;
     title?: string;
     summary?: string;
-    /** Accepts the caller's own scale (CRITICAL/HIGH/MEDIUM/LOW) — normalized below. */
     severity?: string;
     fields?: Array<{ label: string; value: string }>;
     link?: { label: string; url: string };
     dir?: 'rtl' | 'ltr';
     dedupeKey?: string;
-    data?: Record<string, unknown>;
     sourceOrigin?: string;
     idempotencyKey?: string;
   };
@@ -50,48 +47,29 @@ export const POST = guard(async (req: Request) => {
   if (!body.event) return NextResponse.json({ ok: false, error: '`event` is required' }, { status: 400 });
   if (!body.title) return NextResponse.json({ ok: false, error: '`title` is required' }, { status: 400 });
 
-  const item: DigestItem = {
-    title: body.title,
-    summary: body.summary,
-    severity: normalizeSeverity(body.severity),
-    dir: body.dir ?? auth.project.default_dir,
-    occurred_at: new Date().toISOString(),
-    fields: body.fields,
-    link: body.link,
-  };
+  const lines = [body.summary, ...(body.fields ?? []).map((f) => `${f.label}: ${f.value}`)].filter(Boolean);
 
   const request: SendRequest = {
     event: body.event,
     to: body.to,
     subject: body.title,
-    text: [body.summary, ...(body.fields ?? []).map((f) => `${f.label}: ${f.value}`)].filter(Boolean).join('\n'),
-    severity: body.severity ?? 'info',
+    template: 'notice',
+    data: { heading: body.title, body: lines.join('\n'), link: body.link },
+    severity: body.severity,
     dir: body.dir,
-    item,
     dedupeKey: body.dedupeKey,
-    data: body.data,
     sourceOrigin: body.sourceOrigin ?? req.headers.get('x-source-origin') ?? req.headers.get('origin') ?? undefined,
     idempotencyKey: body.idempotencyKey ?? req.headers.get('idempotency-key') ?? undefined,
   };
 
-  // A structured event with no pre-rendered HTML that turns out NOT to be
-  // digestible still has to become a real email — render it through the
-  // central `notice` template rather than sending an empty body.
-  if (!request.html) {
-    request.template = 'notice';
-    request.data = {
-      heading: body.title,
-      body: [body.summary, ...(body.fields ?? []).map((f) => `${f.label}: ${f.value}`)].filter(Boolean).join('\n'),
-      link: body.link,
-      ...body.data,
-    };
-  }
-
-  const result = await ingest(auth.project, request);
-  maybeDrain(() => flushDue(flushDeps));
+  const result = await send(auth.project, request);
+  maybeRetry();
 
   if (result.status === 'error') {
     return NextResponse.json({ ok: false, error: result.error }, { status: result.http });
   }
-  return NextResponse.json({ ok: true, ...result }, { status: result.status === 'queued' ? 202 : 200 });
+  if (result.status === 'failed') {
+    return NextResponse.json({ ok: false, ...result }, { status: 502 });
+  }
+  return NextResponse.json({ ok: true, ...result }, { status: 200 });
 });

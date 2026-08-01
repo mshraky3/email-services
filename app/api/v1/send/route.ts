@@ -2,29 +2,27 @@ import { NextResponse } from 'next/server';
 import { guard } from '@/lib/route.ts';
 import { authenticate } from '@/lib/auth.ts';
 import { ensureSchema } from '@/lib/db.ts';
-import { flushDeps, ingest, type SendRequest } from '@/lib/ingest.ts';
-import { flushDue } from '@/lib/digest.ts';
-import { maybeDrain } from '@/lib/queue.ts';
+import { maybeRetry, send, type SendRequest } from '@/lib/send.ts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 60;
+export const maxDuration = 30;
 
 /**
- * POST /api/v1/send — Tier A passthrough.
+ * POST /api/v1/send — sends the email, now, and tells you what happened.
  *
- * The response distinguishes SUCCESS-BUT-NOT-SENT (`suppressed`, `buffered`,
- * `dropped`, `duplicate`) from genuine failures. That distinction is what makes
- * the client SDK's fallback safe: a caller must never retry or fall back to its
- * own SMTP on those, because the gateway handled them correctly.
+ * Synchronous by design. There is no queue: a 200 means it left the building,
+ * and the response carries the provider's message id. Nothing to poll.
+ *
+ * Non-error outcomes that are NOT a send — `suppressed`, `dropped`,
+ * `throttled`, `duplicate` — still return 200. They mean the gateway handled
+ * the request correctly and the caller must not retry.
  */
 export const POST = guard(async (req: Request) => {
   await ensureSchema();
 
   const auth = await authenticate(req);
-  if (!auth) {
-    return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
-  }
+  if (!auth) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
 
   let body: SendRequest;
   try {
@@ -38,26 +36,18 @@ export const POST = guard(async (req: Request) => {
   body.sourceOrigin ??= req.headers.get('x-source-origin') ?? req.headers.get('origin') ?? req.headers.get('referer') ?? undefined;
   body.idempotencyKey ??= req.headers.get('idempotency-key') ?? undefined;
 
-  const result = await ingest(auth.project, body);
+  const result = await send(auth.project, body);
 
-  // Vercel Hobby crons cannot run more than daily, so inbound traffic is the
-  // main thing keeping the queue moving.
-  maybeDrain(() => flushDue(flushDeps));
+  // Ordinary traffic is what recovers previously failed sends. No scheduler.
+  maybeRetry();
 
-  switch (result.status) {
-    case 'sent':
-      return NextResponse.json({ ok: true, ...result }, { status: 200 });
-    case 'queued':
-      return NextResponse.json({ ok: true, ...result }, { status: 202 });
-    case 'buffered':
-    case 'suppressed':
-    case 'dropped':
-    case 'duplicate':
-      return NextResponse.json({ ok: true, ...result }, { status: 200 });
-    case 'error':
-      return NextResponse.json(
-        { ok: false, error: result.error, ...(result.retry_after ? { retry_after: result.retry_after } : {}) },
-        { status: result.http, ...(result.retry_after ? { headers: { 'Retry-After': String(result.retry_after) } } : {}) },
-      );
+  if (result.status === 'error') {
+    return NextResponse.json({ ok: false, error: result.error }, { status: result.http });
   }
+  if (result.status === 'failed') {
+    // The gateway did not deliver, so the caller may legitimately fall back to
+    // its own sender. 502 is outside the SDK's no-fallback list on purpose.
+    return NextResponse.json({ ok: false, ...result }, { status: 502 });
+  }
+  return NextResponse.json({ ok: true, ...result }, { status: 200 });
 });

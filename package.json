@@ -14,7 +14,6 @@
     "smoke": "node scripts/smoke.mjs",
     "audit:usage": "node scripts/audit-usage.mjs",
     "reconcile": "node scripts/reconcile.mjs",
-    "verify:live": "node scripts/verify-live.mjs",
     "preflight": "node scripts/preflight.mjs",
     "send:test": "node scripts/live-send-test.mjs",
     "verify:projects": "node scripts/verify-projects.mjs"

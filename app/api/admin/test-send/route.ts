@@ -4,8 +4,7 @@ import { checkSecret } from '@/lib/auth.ts';
 import { ensureSchema, one, query } from '@/lib/db.ts';
 import { transports } from '@/lib/transports/index.ts';
 import { digestTemplate, noticeTemplate, otpTemplate, shell } from '@/lib/render.ts';
-import { loadQuotaSnapshot } from '@/lib/queue.ts';
-import { quotaReport } from '@/lib/quota.ts';
+import { DEFAULT_DAILY_BUDGET, evaluate } from '@/lib/quota.ts';
 import type { ProjectRow, TransportName } from '@/lib/types.ts';
 
 export const runtime = 'nodejs';
@@ -130,10 +129,9 @@ export const POST = guard(async (req: Request) => {
   // is still counted against quota rather than silently free.
   const row = await one<{ id: string }>(
     `INSERT INTO messages
-       (project_id, event_type, priority, audience, to_address, from_name, from_address,
-        subject, html, text, locale, dir, status, transport, expires_at, source_origin)
-     VALUES ($1,'gateway.test_send',2,'owner',$2,$3,$4,$5,$6,$7,$8,$9,'attempting',$10,
-             NOW() + INTERVAL '1 hour','admin-test-page')
+       (project_id, event_type, audience, to_address, from_name, from_address,
+        subject, html, text, locale, dir, status, transport, source_origin)
+     VALUES ($1,'gateway.test_send','owner',$2,$3,$4,$5,$6,$7,$8,$9,'sending',$10,'admin-test-page')
      RETURNING id`,
     [project.id, to, project.default_from_name, fromAddress, subject, html, text ?? null,
      project.default_locale, body.dir ?? project.default_dir, transport],
@@ -151,8 +149,17 @@ export const POST = guard(async (req: Request) => {
     });
     await query(`UPDATE messages SET status='sent', provider_id=$2, sent_at=NOW() WHERE id=$1`, [row!.id, res.id]);
 
-    const snapshot = await loadQuotaSnapshot();
-    const report = quotaReport(snapshot);
+    const [usedRow, budgetRow] = await Promise.all([
+      one<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM messages
+          WHERE transport='resend' AND status IN ('sent','sending')
+            AND COALESCE(sent_at, created_at) > NOW() - INTERVAL '24 hours'`),
+      one<{ v: string }>(`SELECT v FROM quota_settings WHERE k='daily_budget'`),
+    ]);
+    const q = evaluate({
+      usedToday: Number(usedRow?.n ?? 0),
+      budget: Number(budgetRow?.v ?? DEFAULT_DAILY_BUDGET),
+    });
 
     return NextResponse.json({
       ok: true,
@@ -163,7 +170,7 @@ export const POST = guard(async (req: Request) => {
       to,
       subject,
       cost: transport === 'resend' ? '1 Resend email' : 'nothing — Gmail is a separate quota',
-      quota: { daily_used: report.daily_used, daily_ceiling: report.daily_ceiling },
+      quota: { used: q.usedToday, budget: q.budget, remaining: q.remaining },
     });
   } catch (err) {
     const message = (err as Error).message ?? 'send failed';

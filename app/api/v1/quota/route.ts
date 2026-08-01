@@ -1,23 +1,19 @@
 import { NextResponse } from 'next/server';
 import { guard } from '@/lib/route.ts';
 import { authenticate } from '@/lib/auth.ts';
-import { ensureSchema } from '@/lib/db.ts';
-import { loadProjectLimits, loadQuotaSnapshot } from '@/lib/queue.ts';
-import { quotaReport, admit, type Priority } from '@/lib/quota.ts';
+import { ensureSchema, one } from '@/lib/db.ts';
+import { DEFAULT_DAILY_BUDGET, evaluate, quotaReport } from '@/lib/quota.ts';
 import { lastRateLimit } from '@/lib/transports/index.ts';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 /**
- * GET /api/v1/quota[?priority=3]
+ * GET /api/v1/quota — how much Resend budget is left.
  *
- * Exists so cron jobs stop guessing. MEDQIZE's lifecycle crons currently
- * hardcode LIMIT 50/100/100/50 = 300 candidates a day against a 100/day budget,
- * so most of that work is generated only to be dropped. They should ask first:
- *
- *   const q = await gateway.quota({ priority: 3 });
- *   const limit = Math.min(50, q.remaining_for_priority);
+ * Informational. Nothing is refused when it runs out; mail simply goes over
+ * Gmail instead. Useful for the dashboard and for a cron that would rather
+ * spread its work than spill onto the fallback transport.
  */
 export const GET = guard(async (req: Request) => {
   await ensureSchema();
@@ -25,21 +21,36 @@ export const GET = guard(async (req: Request) => {
   const auth = await authenticate(req);
   if (!auth) return NextResponse.json({ ok: false, error: 'unauthorized' }, { status: 401 });
 
-  const [snapshot, limits] = await Promise.all([
-    loadQuotaSnapshot(),
-    loadProjectLimits(auth.project.id),
+  const [used, budgetRow, mine] = await Promise.all([
+    one<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM messages
+        WHERE transport='resend' AND status IN ('sent','sending')
+          AND COALESCE(sent_at, created_at) > NOW() - INTERVAL '24 hours'`,
+    ),
+    one<{ v: string }>(`SELECT v FROM quota_settings WHERE k='daily_budget'`),
+    one<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM messages
+        WHERE project_id=$1 AND transport='resend' AND status IN ('sent','sending')
+          AND COALESCE(sent_at, created_at) > NOW() - INTERVAL '24 hours'`,
+      [auth.project.id],
+    ),
   ]);
 
-  const report = quotaReport(snapshot, limits);
-  const asked = new URL(req.url).searchParams.get('priority');
-  const priority = asked === null ? null : (Number(asked) as Priority);
+  const state = {
+    usedToday: Number(used?.n ?? 0),
+    budget: Number(budgetRow?.v ?? DEFAULT_DAILY_BUDGET),
+  };
 
   return NextResponse.json({
     ok: true,
-    ...report,
-    ...(priority !== null && priority >= 0 && priority <= 4
-      ? { remaining_for_priority: admit(snapshot, priority, limits).remaining }
-      : {}),
+    ...quotaReport(state, {
+      slug: auth.project.slug,
+      usedToday: Number(mine?.n ?? 0),
+      dailyMax: auth.project.daily_max,
+    }),
+    note: evaluate(state).resendAvailable
+      ? 'Resend is carrying mail normally.'
+      : 'Resend budget spent — mail is going over Gmail until the window rolls.',
     provider_rate_limit: lastRateLimit,
   });
 });

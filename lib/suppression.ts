@@ -12,7 +12,7 @@
  */
 
 import { one, query } from './db.ts';
-import type { Priority } from './quota.ts';
+import type { Priority } from './types.ts';
 
 export type SuppressionReason =
   | 'hard_bounce'
@@ -119,7 +119,7 @@ export async function recordSoftBounce(email: string): Promise<void> {
 }
 
 /**
- * Reputation circuit breaker.
+ * Reputation snapshot.
  *
  * One project's broadcast complaint storm otherwise degrades another project's
  * OTP delivery, because there is exactly one domain and one reputation. When
@@ -152,8 +152,7 @@ export async function reputationCheck(): Promise<{
   const bounceRate = bounces / delivered;
   const tripped = complaintRate > 0.001 || bounceRate > 0.02;
 
-  if (tripped) {
-    await query(`UPDATE quota_policy SET ceiling = 0 WHERE priority >= 3`);
-  }
+  // v3 has no priority ceilings to clamp, so this reports rather than acts.
+  // A tripped result means stop sending marketing from this domain by hand.
   return { complaintRate, bounceRate, tripped };
 }

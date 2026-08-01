@@ -23,20 +23,21 @@ THE ONE HARD RULE
   so a project that sends behind the gateway's back breaks the budget for
   everyone and damages a sending reputation that all projects share.
 
-THE BUDGET, HONESTLY
-  Resend free tier = 100 emails/day and 3,000/month across ALL projects
-  combined. The gateway enforces 95/day to leave headroom. That is not much.
-  It is why priorities exist, why digests exist, and why some mail is
-  deliberately delayed or dropped. Read section 6 before you assume your email
-  will go out the second you ask for it.
+HOW IT SENDS
+  Immediately. You POST, the email goes out, you get the real result back with
+  the provider's message id. There is no queue, no scheduler and nothing to
+  poll. A 200 means it left the building.
 
-  Resend sends everything. Gmail is configured only as an overflow valve for
-  when the daily budget runs out — it is free but far more likely to land in
-  spam, so nothing relies on it by choice.
+THE BUDGET
+  Resend free tier = 100 emails/day across ALL projects combined. The gateway
+  uses 95 to leave headroom, and that is the ONLY quota rule:
 
-  What actually keeps the estate inside the budget is DIGESTING. Mark your
-  owner-facing mail with audience "owner" and a digest delivery_mode, and
-  twenty notifications become one email.
+    under 95 today  ->  sent via Resend, on the verified domain
+    at or over 95   ->  sent via Gmail instead (separate 500/day allowance)
+
+  Nothing is ever refused, delayed or dropped because of quota. Gmail is a
+  fallback, not a plan: it is unauthenticated for this domain and more likely
+  to land in spam, so it exists purely so mail never stops.
 
 --------------------------------------------------------------------------------
 1. GET REGISTERED
@@ -123,18 +124,16 @@ event; the gateway decides what that means.
 
 Fields that matter:
 
-  priority        0..4 — see section 6
-  audience        "user"     mail to your users.
-                  "owner"    mail to the operator — pair it with a digest
-                             delivery_mode and many events become one email.
-                  "internal" staff/admin recipients.
-  delivery_mode   "immediate" | "digest:hourly" | "digest:daily" | "suppress"
-  digest_key_template   which digest to join, e.g. "owner:daily"
-  dedupe_key_template   repeats with the same key increment a counter instead
-                        of piling up, e.g. "{{event_type}}:{{data.error_key}}"
-  escalate_when   bypass the digest when this matches, e.g. {"severity":["CRITICAL"]}
-  honors_unsubscribe    set FALSE for OTP and invoices. Nobody can unsubscribe
-                        from their own password reset.
+  audience        "user" | "owner" | "internal" — who the mail is for.
+  cooldown_seconds  swallow identical repeats for this long. Set it on error
+                    alerts (900 is a good default) and pass a stable dedupeKey,
+                    and one broken endpoint sends ONE email instead of forty.
+                    Leave it 0 for everything a person is actually waiting for.
+  honors_unsubscribe  set FALSE for OTP and invoices. Nobody can unsubscribe
+                    from their own password reset.
+  transport_hint  force "gmail" or "resend". Rarely needed — leave it null.
+  priority        only grades suppressions: 0-1 survive an unsubscribe,
+                  3+ is marketing and does not.
 
 An UNREGISTERED event still sends — it just gets cautious defaults (P2,
 immediate). Register it anyway; the defaults are not what you want.
@@ -191,52 +190,44 @@ TIER A — you already have rendered HTML
 --------------------------------------------------------------------------------
 5. READ THE RESPONSE PROPERLY — THIS IS THE PART PEOPLE GET WRONG
 --------------------------------------------------------------------------------
-  200 {"status":"sent"}        gone out
-  202 {"status":"queued"}      accepted, will send shortly.  THIS IS SUCCESS.
-  200 {"status":"buffered"}    folded into a digest.         THIS IS SUCCESS.
-  200 {"status":"suppressed"}  recipient bounced/complained/unsubscribed. SUCCESS.
-  200 {"status":"dropped"}     non-production origin (see section 8). SUCCESS.
-  200 {"status":"duplicate"}   you already sent this idempotency key. SUCCESS.
+  200 {"status":"sent"}        gone out. provider_id tells you which message.
+  200 {"status":"suppressed"}  that address bounced, complained or unsubscribed.
+  200 {"status":"dropped"}     non-production origin (see section 8).
+  200 {"status":"throttled"}   an identical alert went out moments ago.
+  200 {"status":"duplicate"}   this idempotency key already sent.
 
-  429 project_daily_cap        your project hit its own cap. Back off.
-  503 quota_exhausted          no budget left (P0 only). Show the code on screen
-                               instead of relying on email.
-  500 gateway_unavailable      the gateway itself is down. Retry or fall back.
+  400 / 413                    your payload is wrong. Fix it; do not retry.
+  502 {"status":"failed"}      the gateway tried and the transport refused.
+                               It is parked and retried automatically.
+  500 gateway_unavailable      the gateway itself is down.
 
-  NEVER retry a 2xx. NEVER treat suppressed/buffered/dropped as an error.
-  NEVER fall back to your own SMTP on 429 or 503 — that sends the email anyway
-  and blows the shared cap while the ledger thinks it is under budget.
-  (The supplied client already implements this rule correctly. Use it.)
-
---------------------------------------------------------------------------------
-6. PRIORITIES — WHAT EACH ONE ACTUALLY PROMISES
---------------------------------------------------------------------------------
-  P0  URGENT         OTP, password reset. A human is staring at a blocked
-                     screen. Sent inline, never queued, never dropped.
-                     25/day is reserved for P0 and NO amount of lower-priority
-                     traffic can take it.
-
-  P1  TRANSACTIONAL  invoices, receipts, "your request was answered". Sent
-                     within minutes. Retried for 24h, then dead-lettered.
-                     Never silently dropped.
-
-  P2  OPERATIONAL    admin alerts, contact forms, error reports. Usually
-                     digested. Delivered within hours.
-
-  P3  LIFECYCLE      welcome, re-engagement, reminders. Best effort.
-                     >>> DROPPED SILENTLY after 48h. <<<
-                     This is deliberate: a welcome email three days late, or a
-                     "you're on a 5-day streak" about a streak that already
-                     ended, is worse than no email.
-
-  P4  BULK           campaigns, announcements. Paced over days. Dropped after 30d.
-
-  You cannot request a better priority than your project's best_priority.
-  Do not label a newsletter P0. It will be clamped, and you will have made the
-  gateway's job harder for nothing.
+  Every 200 is a SUCCESS, including the four that did not send an email. They
+  are decisions the gateway made on purpose. Do not retry them, and do not
+  send the message some other way to get around them — "suppressed" in
+  particular means mailing that address damages a reputation every project
+  shares. (The supplied client already implements this. Use it.)
 
 --------------------------------------------------------------------------------
-7. RULES FOR NOT BREAKING THINGS
+6. WHAT THE GATEWAY DECIDES FOR YOU
+--------------------------------------------------------------------------------
+  Everything sends immediately, so there is no waiting to reason about. What
+  the gateway still decides:
+
+  IT WILL NOT SEND to an address that hard-bounced or reported spam. All
+  projects share one domain and one reputation; mailing a dead address hurts
+  delivery for everyone.
+
+  IT WILL NOT SEND mail whose origin is not one of your registered production
+  hostnames — see section 8. This is the localhost guard.
+
+  IT WILL NOT SEND an identical alert twice inside your event's cooldown.
+
+  IT WILL NOT SEND twice for the same idempotencyKey.
+
+  IT WILL SWITCH to Gmail if the day's Resend budget is gone, rather than
+  refusing. You do not have to handle that case.
+
+ RULES FOR NOT BREAKING THINGS
 --------------------------------------------------------------------------------
   DO NOT loop over recipients calling send(). Use sendBulk():
 
@@ -253,13 +244,13 @@ TIER A — you already have rendered HTML
   ALWAYS pass an idempotencyKey on anything money- or account-related. It is
   what stops a retry, a double-click or a re-run from sending twice.
 
-  ASK BEFORE BULK WORK. Do not hardcode a LIMIT in a cron job:
+  CHECK THE BUDGET before a big batch, if you would rather not spill onto the
+  Gmail fallback:
 
-    const q = await mail.quota({ priority: 3 });
-    const rows = await db.query('SELECT ... LIMIT $1', [Math.min(50, q.remaining_for_priority)]);
+    const q = await mail.quota();
+    if (q.remaining < rows.length) { /* send fewer, or accept the fallback */ }
 
-  Generating 300 candidates a day against a 95/day budget just creates work to
-  be thrown away.
+  This is advisory. Nothing is refused when the budget runs out.
 
   ALWAYS send a plain-text part alongside HTML. It measurably improves
   deliverability, and all four existing projects already do it.
@@ -314,17 +305,17 @@ those messages with status "dropped" and the reason.
   Quota              GET  /api/v1/quota            what is left, by priority
 
   Check in this order:
-    status "dropped"     -> your sourceOrigin was not a production host
+    status "dropped"     -> your sourceOrigin was not a production host.
+                            This is the most common cause. Register the
+                            hostname (section 1) and it works.
     status "suppressed"  -> that address bounced, complained or unsubscribed
-    status "buffered"    -> it is in a digest; check flush_at
-    status "queued" old  -> the queue is not draining; check /api/v1/health
-    status "dead"        -> 5 attempts failed; read last_error, then retry from
-                            the admin API once you have fixed the cause
-    no record at all     -> your project did not reach the gateway. Check the
+    status "throttled"   -> an identical alert went out inside the cooldown
+    status "failed"      -> the transport refused; read last_error. It is
+                            retried automatically by later traffic.
+    no record at all     -> your project never reached the gateway. Check the
                             key, the URL, and EMAIL_GATEWAY_MODE.
 
 ================================================================================
-  Questions the gateway answers so you do not have to: how many can I send,
-  who bounced, did it arrive, what is queued, and what did it cost.
-  Ask it. Do not guess.
+  Questions the gateway answers so you do not have to: did it arrive, who
+  bounced, how much budget is left, and what went out today. Ask it.
 ================================================================================

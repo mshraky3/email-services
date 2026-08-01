@@ -1,4 +1,9 @@
-import type { Priority } from './quota.ts';
+
+/**
+ * Retained only to grade suppressions: a hard bounce blocks everything (0),
+ * an unsubscribe blocks marketing only (2). It no longer schedules anything.
+ */
+export type Priority = 0 | 1 | 2 | 3 | 4;
 
 export type Audience = 'owner' | 'internal' | 'user';
 export type TransportName = 'resend' | 'gmail' | 'noop';
@@ -7,10 +12,8 @@ export type Severity = 'info' | 'warn' | 'critical';
 /**
  * Map a caller's severity onto our three-level scale.
  *
- * The projects do not share our vocabulary. MEDQIZE's errorNotificationService
- * and HR-'s classify errors as CRITICAL / HIGH / MEDIUM / LOW, and passing
- * those through unchanged violates the digest_buffer CHECK constraint and 500s
- * the whole request.
+ * The projects do not share our vocabulary: MEDQIZE's errorNotificationService
+ * and HR-'s both classify errors as CRITICAL / HIGH / MEDIUM / LOW.
  *
  * Anything unrecognised degrades to 'info' rather than throwing: an unknown
  * label is not a good reason to lose an error report.
@@ -32,15 +35,12 @@ export function normalizeSeverity(raw: unknown): Severity {
 }
 
 export type MessageStatus =
-  | 'queued'
-  | 'claimed'
-  | 'attempting'
+  | 'sending'      // handed to a transport, outcome not yet known
   | 'sent'
-  | 'failed'
-  | 'dead'
-  | 'expired'
-  | 'suppressed'
-  | 'dropped'
+  | 'failed'       // retried by the next inbound request
+  | 'dropped'      // non-production origin
+  | 'suppressed'   // bounced / complained / unsubscribed
+  | 'throttled'    // identical repeat inside the cooldown window
   | 'cancelled';
 
 export interface ProjectRow {
@@ -67,15 +67,10 @@ export interface PolicyRow {
   event_type: string;
   priority: Priority;
   audience: Audience;
-  delivery_mode: 'immediate' | 'digest:hourly' | 'digest:daily' | 'digest:weekly' | 'suppress';
-  digest_key_template: string | null;
-  dedupe_key_template: string | null;
-  flush_threshold: number;
-  escalate_when: Record<string, unknown> | null;
-  escalated_priority: Priority | null;
   transport_hint: TransportName | null;
-  ttl_seconds: number | null;
   honors_unsubscribe: boolean;
+  /** Seconds to swallow identical dedupe_key repeats. 0 = never. */
+  cooldown_seconds: number;
   active: boolean;
 }
 
@@ -92,7 +87,6 @@ export interface MessageRow {
   id: string;
   project_id: number;
   event_type: string;
-  priority: Priority;
   audience: Audience;
   to_address: string;
   to_name: string | null;
@@ -113,18 +107,15 @@ export interface MessageRow {
   last_error: string | null;
   idempotency_key: string | null;
   dedupe_key: string | null;
-  batch_id: string | null;
-  digest_of: string | null;
   source_origin: string | null;
-  scheduled_at: Date;
-  expires_at: Date;
-  claimed_at: Date | null;
+  severity: Severity;
+  retry_after: Date | null;
   sent_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }
 
-/** One entry inside a rendered digest. Structure, not HTML — see lib/digest.ts. */
+/** One entry inside a rendered digest — used by the test page's sample. */
 export interface DigestItem {
   title: string;
   summary?: string;
@@ -143,11 +134,11 @@ export interface SendResult {
 }
 
 /**
- * Error classes the drain loop and the client SDK branch on.
+ * Error classes the send path and the client SDK branch on.
  *
- * The distinction that matters most: `quota` must NEVER cause the client SDK
- * to fall back to a project's legacy SMTP sender. Doing so sends the email
- * anyway and blows the cap while the ledger believes it is under budget.
+ * `quota` is special: it means Resend's daily budget is spent, and the send
+ * path reacts by switching to Gmail and retrying immediately rather than
+ * failing. It is never surfaced to the caller as an error.
  */
 export type FailureKind = 'network' | 'timeout' | 'rate_limit' | 'quota' | 'validation' | 'server';
 

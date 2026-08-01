@@ -217,7 +217,7 @@ export default function TestPage() {
                   ['Transport', result.transport],
                   ['Provider id', result.provider_id ?? '—'],
                   ['Cost', result.cost],
-                  ['Budget', `${result.quota?.daily_used} / ${result.quota?.daily_ceiling} today`],
+                  ['Budget', `${result.quota?.used} / ${result.quota?.budget} used in the last 24h`],
                 ].map(([k, v]) => (
                   <tr key={k as string}>
                     <td style={{ color: '#94a3b8', padding: '3px 16px 3px 0', verticalAlign: 'top', whiteSpace: 'nowrap' }}>{k}</td>

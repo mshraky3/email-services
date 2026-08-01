@@ -1,158 +1,129 @@
 /**
- * End-to-end smoke test against a running gateway + real database.
+ * End-to-end smoke test against a running gateway.
  *
- *   npm run db:init && npm run db:seed
- *   npm run dev            # in another terminal
- *   GATEWAY_URL=http://localhost:3100 SMOKE_KEY=ek_live_medqize_... npm run smoke
+ *   npm run smoke     (with GATEWAY_URL and SMOKE_KEY set)
  *
- * Everything runs with DRY_RUN=true, so no email leaves the building. What is
- * being proven is the DECISION each message gets, which is the part that can
- * actually lose mail or blow the quota.
+ * Runs with DRY_RUN=true, so nothing is emailed. What is being proven is the
+ * DECISION each message gets — the part that can actually lose mail or spend
+ * budget wrongly.
  */
 import './_env.mjs';
 
 const BASE = process.env.GATEWAY_URL ?? 'http://localhost:3100';
 const KEY = process.env.SMOKE_KEY;
 const TO = process.env.SMOKE_TO ?? 'alshraky3@gmail.com';
+const PROD = 'https://medquiz.vercel.app/';
 
 if (!KEY) {
-  console.error('\n  SMOKE_KEY is required — take it from `npm run db:seed` output.\n');
+  console.error('\n  SMOKE_KEY is required — take it from `npm run db:seed`.\n');
   process.exit(1);
 }
 
 let passed = 0, failed = 0;
-
-function check(name, condition, detail = '') {
-  if (condition) { passed++; console.log(`  PASS  ${name}`); }
+const check = (name, ok, detail = '') => {
+  if (ok) { passed++; console.log(`  PASS  ${name}`); }
   else { failed++; console.log(`  FAIL  ${name}  ${detail}`); }
-}
+};
 
-async function post(path, body, headers = {}) {
+const post = async (path, body) => {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json', ...headers },
+    headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
-  return { status: res.status, body: await res.json().catch(() => ({})) };
-}
-
-async function get(path) {
+  return { http: res.status, ...(await res.json().catch(() => ({}))) };
+};
+const get = async (path) => {
   const res = await fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${KEY}` } });
-  return { status: res.status, body: await res.json().catch(() => ({})) };
-}
+  return { http: res.status, ...(await res.json().catch(() => ({}))) };
+};
 
+const run = Date.now();
 console.log(`\n  Gateway: ${BASE}\n`);
 
-// ── 1. health ───────────────────────────────────────────────────────────────
+// ── health and auth ─────────────────────────────────────────────────────────
 const health = await get('/api/v1/health');
-check('health responds', health.status === 200 || health.status === 503, `status ${health.status}`);
-check('dry-run is on (nothing will actually send)', health.body?.dry_run === true,
-  'set DRY_RUN=true before smoke testing');
+check('health responds', health.http === 200 || health.http === 503, `status ${health.http}`);
+check('runs in immediate mode — no queue', health.mode === 'immediate', JSON.stringify(health.mode));
+check('dry run is on (nothing is emailed)', health.dry_run === true, 'set DRY_RUN=true to smoke test');
 
-// ── 2. auth ─────────────────────────────────────────────────────────────────
 const noAuth = await fetch(`${BASE}/api/v1/send`, {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({ to: TO, subject: 'x', text: 'x' }),
 });
 check('unauthenticated send is rejected', noAuth.status === 401, `got ${noAuth.status}`);
 
-// ── 3. the origin gate — the localhost-against-prod case ────────────────────
-const dev = await post('/api/v1/send', {
-  event: 'medqize.owner.backend_error', to: TO, subject: 'dev error', text: 'stack trace',
-  sourceOrigin: 'http://localhost:5173/quiz',
+// ── the send is immediate ───────────────────────────────────────────────────
+const otp = await post('/api/v1/send', {
+  event: 'medqize.otp.signup', to: `otp.${run}@example.com`,
+  template: 'otp', data: { code: '4821' }, sourceOrigin: PROD,
+  idempotencyKey: `smoke-otp-${run}`,
 });
-check('a localhost origin is DROPPED, not sent', dev.body?.status === 'dropped',
-  JSON.stringify(dev.body));
-check('the drop costs no quota', dev.body?.id === undefined || dev.body?.id === null, '');
+check('a send returns SENT, not queued', otp.status === 'sent', JSON.stringify(otp));
+check('the response carries a provider id', Boolean(otp.provider_id), JSON.stringify(otp.provider_id));
+check('nothing has to be polled', otp.id !== undefined && otp.transport !== undefined, '');
 
-const preview = await post('/api/v1/send', {
-  event: 'medqize.owner.backend_error', to: TO, subject: 'preview error', text: 'x',
-  sourceOrigin: 'https://medquiz-git-feat-abc.vercel.app/',
-});
-check('a Vercel preview origin is DROPPED', preview.body?.status === 'dropped', JSON.stringify(preview.body));
-
-// ── 4. digest collapse ──────────────────────────────────────────────────────
-const before = await get('/api/v1/quota');
-const errKey = `SMOKE_${Date.now()}`;
-for (let i = 0; i < 20; i++) {
-  await post('/api/v1/notify', {
-    event: 'medqize.owner.backend_error',
-    to: TO,
-    title: 'DB connection refused',
-    summary: 'ECONNREFUSED 10.0.0.5:5432',
-    severity: 'HIGH',
-    dedupeKey: errKey,
-    data: { error_key: errKey },
-    sourceOrigin: 'https://medquiz.vercel.app/',
+// ── the origin gate ─────────────────────────────────────────────────────────
+for (const [label, origin] of [
+  ['a localhost origin is DROPPED', 'http://localhost:5173/quiz'],
+  ['a Vercel preview origin is DROPPED', 'https://medquiz-git-feat-abc.vercel.app/'],
+  ['a LAN origin is DROPPED', 'http://192.168.1.20:5173/'],
+]) {
+  const r = await post('/api/v1/notify', {
+    event: 'medqize.owner.backend_error', to: `drop.${run}@example.com`,
+    title: 'dev error', severity: 'HIGH', sourceOrigin: origin,
   });
+  check(label, r.status === 'dropped', JSON.stringify(r));
 }
-const bufferRes = await post('/api/v1/notify', {
-  event: 'medqize.owner.backend_error', to: TO, title: 'DB connection refused',
-  severity: 'HIGH', dedupeKey: errKey, data: { error_key: errKey },
-  sourceOrigin: 'https://medquiz.vercel.app/',
-});
-check('repeated errors are BUFFERED, not sent one by one', bufferRes.body?.status === 'buffered',
-  JSON.stringify(bufferRes.body));
-check('repeats increment a counter rather than creating rows',
-  (bufferRes.body?.occurrences ?? 0) > 1, `occurrences=${bufferRes.body?.occurrences}`);
 
-// ── 5. escalation ───────────────────────────────────────────────────────────
-const critical = await post('/api/v1/notify', {
-  event: 'medqize.owner.backend_error', to: TO, title: 'PRODUCTION DOWN',
-  severity: 'CRITICAL', data: { error_key: `${errKey}_crit` },
-  sourceOrigin: 'https://medquiz.vercel.app/',
+// ── flood cooldown ──────────────────────────────────────────────────────────
+const key = `smoke-err-${run}`;
+const first = await post('/api/v1/notify', {
+  event: 'medqize.owner.backend_error', to: `err.${run}@example.com`,
+  title: 'DB connection refused', severity: 'HIGH', dedupeKey: key, sourceOrigin: PROD,
 });
-check('CRITICAL escalates out of the digest', critical.body?.status !== 'buffered',
-  JSON.stringify(critical.body));
+const second = await post('/api/v1/notify', {
+  event: 'medqize.owner.backend_error', to: `err.${run}@example.com`,
+  title: 'DB connection refused', severity: 'HIGH', dedupeKey: key, sourceOrigin: PROD,
+});
+check('the first error alert is sent', first.status === 'sent', JSON.stringify(first));
+check('an identical repeat is THROTTLED, not sent again', second.status === 'throttled', JSON.stringify(second));
+check('the repeat is counted', (second.occurrences ?? 0) > 1, `occurrences=${second.occurrences}`);
 
-// ── 6. idempotency ──────────────────────────────────────────────────────────
-const idem = `smoke-${Date.now()}`;
-const first = await post('/api/v1/send', {
-  event: 'medqize.lifecycle.welcome', to: TO, subject: 'Welcome', text: 'hi',
-  idempotencyKey: idem, sourceOrigin: 'https://medquiz.vercel.app/',
-});
+// ── idempotency ─────────────────────────────────────────────────────────────
 const replay = await post('/api/v1/send', {
-  event: 'medqize.lifecycle.welcome', to: TO, subject: 'Welcome', text: 'hi',
-  idempotencyKey: idem, sourceOrigin: 'https://medquiz.vercel.app/',
+  event: 'medqize.otp.signup', to: `otp.${run}@example.com`,
+  template: 'otp', data: { code: '4821' }, sourceOrigin: PROD,
+  idempotencyKey: `smoke-otp-${run}`,
 });
-check('first send is accepted', ['queued', 'sent'].includes(first.body?.status), JSON.stringify(first.body));
-check('a replay returns the ORIGINAL and does not re-send', replay.body?.status === 'duplicate',
-  JSON.stringify(replay.body));
-check('the replay points at the same message', replay.body?.id === first.body?.id, '');
+check('a replayed idempotency key does not re-send', replay.status === 'duplicate', JSON.stringify(replay));
+check('the replay points at the original message', replay.id === otp.id, '');
 
-// ── 7. owner mail costs zero Resend quota ───────────────────────────────────
-const after = await get('/api/v1/quota');
-check('owner-facing traffic did not consume the Resend budget',
-  after.body?.daily_used === before.body?.daily_used,
-  `before=${before.body?.daily_used} after=${after.body?.daily_used}`);
-
-// ── 8. quota reporting ──────────────────────────────────────────────────────
-const q = await get('/api/v1/quota?priority=3');
-check('quota reports a remaining figure crons can size against',
-  typeof q.body?.remaining_for_priority === 'number', JSON.stringify(q.body?.remaining_for_priority));
-check('P0 reserve is protected', (q.body?.by_priority?.[0]?.reserve ?? 0) > 0, '');
-
-// ── 9. bulk ─────────────────────────────────────────────────────────────────
-const bulk = await post('/api/v1/send/bulk', {
-  event: 'medqize.broadcast.campaign',
-  subject: 'Smoke broadcast', text: 'body', priority: 4,
-  recipients: [TO, TO.toUpperCase(), 'smoke2@example.com'],
-  sourceOrigin: 'https://medquiz.vercel.app/',
-});
-check('bulk returns 202 immediately', bulk.status === 202, `status ${bulk.status}`);
-check('bulk deduplicates case-insensitively', (bulk.body?.duplicate ?? 0) >= 1, JSON.stringify(bulk.body));
-check('bulk reports an honest schedule', typeof bulk.body?.scheduled_over === 'string', '');
-
-// ── 10. validation ──────────────────────────────────────────────────────────
+// ── validation ──────────────────────────────────────────────────────────────
 const bad = await post('/api/v1/send', { to: 'not-an-email', subject: 'x', text: 'x' });
-check('an invalid recipient is refused', bad.status === 400, `status ${bad.status}`);
+check('an invalid recipient is refused', bad.http === 400, `status ${bad.http}`);
 
 const huge = await post('/api/v1/send', {
-  event: 'medqize.invoice', to: TO, subject: 'Invoice', text: 'x',
+  event: 'medqize.invoice', to: `big.${run}@example.com`, subject: 'Invoice', text: 'x',
+  sourceOrigin: PROD,
   attachments: [{ filename: 'big.pdf', content: 'A'.repeat(3 * 1024 * 1024), content_type: 'application/pdf' }],
-  sourceOrigin: 'https://medquiz.vercel.app/',
 });
-check('an oversized attachment is refused with 413', huge.status === 413, `status ${huge.status}`);
+check('an oversized attachment is refused with 413', huge.http === 413, `status ${huge.http}`);
+
+// ── bulk ────────────────────────────────────────────────────────────────────
+const bulk = await post('/api/v1/send/bulk', {
+  event: 'hr.branch.notify_all', subject: 'إشعار', text: 'body', sourceOrigin: PROD,
+  recipients: [`b1.${run}@example.com`, `B1.${run}@EXAMPLE.COM`, `b2.${run}@example.com`],
+});
+check('bulk reports per-recipient outcomes', bulk.http === 200, `status ${bulk.http}`);
+check('bulk deduplicates case-insensitively', (bulk.duplicate ?? 0) >= 1, JSON.stringify(bulk));
+check('bulk actually sent the rest', (bulk.sent ?? 0) >= 2, JSON.stringify(bulk));
+
+// ── quota is informational, never a refusal ─────────────────────────────────
+const q = await get('/api/v1/quota');
+check('quota reports the budget', typeof q.remaining === 'number', JSON.stringify(q.remaining));
+check('quota says whether Resend is still carrying mail', typeof q.resend_available === 'boolean', '');
+check('the project sees only its own limits', q.project?.slug !== undefined, JSON.stringify(q.project));
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 process.exit(failed === 0 ? 0 : 1);

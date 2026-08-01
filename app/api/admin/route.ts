@@ -18,7 +18,6 @@ export const dynamic = 'force-dynamic';
  *   revoke_key       revoke by prefix
  *   set_policy       upsert a notification_policies row
  *   set_setting      change a quota_settings value (no redeploy needed)
- *   set_class        change a quota_policy reserve/ceiling
  *   suppress         manually add to the suppression list
  *   unsuppress       recover a wrongly-suppressed address
  *   retry            put a dead/failed message back in the queue
@@ -99,22 +98,16 @@ export const POST = guard(async (req: Request) => {
       if (!project) return NextResponse.json({ ok: false, error: 'unknown project' }, { status: 404 });
       await query(
         `INSERT INTO notification_policies
-           (project_id, event_type, priority, audience, delivery_mode, digest_key_template,
-            dedupe_key_template, flush_threshold, escalate_when, escalated_priority,
-            transport_hint, ttl_seconds, honors_unsubscribe)
-         VALUES ($1,$2,$3,COALESCE($4,'user'),COALESCE($5,'immediate'),$6,$7,
-                 COALESCE($8,25),$9,$10,$11,$12,COALESCE($13,TRUE))
+           (project_id, event_type, priority, audience, transport_hint,
+            honors_unsubscribe, cooldown_seconds)
+         VALUES ($1,$2,COALESCE($3,2),COALESCE($4,'user'),$5,COALESCE($6,TRUE),COALESCE($7,0))
          ON CONFLICT (project_id, event_type) DO UPDATE SET
            priority=EXCLUDED.priority, audience=EXCLUDED.audience,
-           delivery_mode=EXCLUDED.delivery_mode, digest_key_template=EXCLUDED.digest_key_template,
-           dedupe_key_template=EXCLUDED.dedupe_key_template, flush_threshold=EXCLUDED.flush_threshold,
-           escalate_when=EXCLUDED.escalate_when, escalated_priority=EXCLUDED.escalated_priority,
-           transport_hint=EXCLUDED.transport_hint, ttl_seconds=EXCLUDED.ttl_seconds,
-           honors_unsubscribe=EXCLUDED.honors_unsubscribe`,
-        [project.id, body.event_type, body.priority, body.audience, body.delivery_mode,
-         body.digest_key_template ?? null, body.dedupe_key_template ?? null, body.flush_threshold,
-         body.escalate_when ? JSON.stringify(body.escalate_when) : null, body.escalated_priority ?? null,
-         body.transport_hint ?? null, body.ttl_seconds ?? null, body.honors_unsubscribe],
+           transport_hint=EXCLUDED.transport_hint,
+           honors_unsubscribe=EXCLUDED.honors_unsubscribe,
+           cooldown_seconds=EXCLUDED.cooldown_seconds`,
+        [project.id, body.event_type, body.priority, body.audience,
+         body.transport_hint ?? null, body.honors_unsubscribe, body.cooldown_seconds],
       );
       return NextResponse.json({ ok: true });
     }
@@ -122,11 +115,6 @@ export const POST = guard(async (req: Request) => {
     case 'set_setting':
       await query(`INSERT INTO quota_settings (k,v) VALUES ($1,$2) ON CONFLICT (k) DO UPDATE SET v=EXCLUDED.v`,
         [body.key, String(body.value)]);
-      return NextResponse.json({ ok: true });
-
-    case 'set_class':
-      await query(`UPDATE quota_policy SET reserve=COALESCE($2,reserve), ceiling=COALESCE($3,ceiling) WHERE priority=$1`,
-        [body.priority, body.reserve ?? null, body.ceiling ?? null]);
       return NextResponse.json({ ok: true });
 
     case 'suppress':

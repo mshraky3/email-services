@@ -45,33 +45,37 @@ const stamp = Date.now();
 // slug -> [label, payload, expected status]
 const MATRIX = {
   medqize: [
-    ['OTP is P0 and goes out immediately', 'send',
-      { event: 'medqize.otp.signup', to: `p1.${stamp}@example.com`, subject: 'رمز', text: '4821' }, ['sent', 'queued']],
-    ['contact form folds into the owner digest', 'notify',
-      { event: 'medqize.owner.contact_form', to: `owner.${stamp}@example.com`, title: 'Contact', summary: 'hi' }, ['buffered']],
-    ['a CRITICAL error escapes the digest', 'notify',
-      { event: 'medqize.owner.backend_error', to: `owner.${stamp}@example.com`, title: 'DOWN', severity: 'CRITICAL' }, ['sent', 'queued']],
-    ['dev-origin error is dropped', 'notify',
+    ['OTP sends immediately', 'send',
+      { event: 'medqize.otp.signup', to: `p1.${stamp}@example.com`, subject: 'رمز', text: '4821' }, ['sent']],
+    ['contact form sends immediately', 'notify',
+      { event: 'medqize.owner.contact_form', to: `owner.${stamp}@example.com`, title: 'Contact', summary: 'hi' }, ['sent']],
+    ['an error alert sends', 'notify',
+      { event: 'medqize.owner.backend_error', to: `owner.${stamp}@example.com`, title: 'DOWN',
+        severity: 'CRITICAL', dedupeKey: `crit-${stamp}` }, ['sent']],
+    ['an identical error repeat is throttled', 'notify',
+      { event: 'medqize.owner.backend_error', to: `owner.${stamp}@example.com`, title: 'DOWN',
+        severity: 'CRITICAL', dedupeKey: `crit-${stamp}` }, ['throttled']],
+    ['dev-origin mail is dropped', 'notify',
       { event: 'medqize.owner.backend_error', to: `owner.${stamp}@example.com`, title: 'dev', severity: 'HIGH',
         sourceOrigin: 'http://localhost:5173/quiz' }, ['dropped']],
   ],
   hr: [
-    ['branch login OTP is P0', 'send',
-      { event: 'hr.otp.login', to: `p2.${stamp}@example.com`, subject: 'رمز', text: '1234' }, ['sent', 'queued']],
-    ['new request folds into the owner digest', 'notify',
-      { event: 'hr.owner.new_request', to: `owner.${stamp}@example.com`, title: 'طلب', summary: 'x' }, ['buffered']],
-    ['branch fan-out is queued at P3, not sent inline', 'send',
-      { event: 'hr.branch.notify_all', to: `p3.${stamp}@example.com`, subject: 'إشعار', text: 'x' }, ['queued']],
+    ['branch login OTP sends immediately', 'send',
+      { event: 'hr.otp.login', to: `p2.${stamp}@example.com`, subject: 'رمز', text: '1234' }, ['sent']],
+    ['new request sends immediately', 'notify',
+      { event: 'hr.owner.new_request', to: `owner.${stamp}@example.com`, title: 'طلب', summary: 'x' }, ['sent']],
+    ['branch fan-out sends', 'send',
+      { event: 'hr.branch.notify_all', to: `p3.${stamp}@example.com`, subject: 'إشعار', text: 'x' }, ['sent']],
   ],
   portfolio: [
-    ['contact form folds into the shared owner digest', 'notify',
-      { event: 'portfolio.owner.contact_form', to: `owner.${stamp}@example.com`, title: 'New contact', summary: 'hi' }, ['buffered']],
-    ['job digest stays immediate', 'send',
-      { event: 'portfolio.owner.job_digest', to: `owner.${stamp}@example.com`, subject: 'jobs', html: '<p>x</p>' }, ['sent', 'queued']],
+    ['contact form sends immediately', 'notify',
+      { event: 'portfolio.owner.contact_form', to: `owner.${stamp}@example.com`, title: 'New contact', summary: 'hi' }, ['sent']],
+    ['job digest sends', 'send',
+      { event: 'portfolio.owner.job_digest', to: `owner.${stamp}@example.com`, subject: 'jobs', html: '<p>x</p>' }, ['sent']],
   ],
   game: [
-    ['player feedback folds into the owner digest', 'notify',
-      { event: 'game.owner.feedback', to: `owner.${stamp}@example.com`, title: 'رسالة', summary: 'x' }, ['buffered']],
+    ['player feedback sends immediately', 'notify',
+      { event: 'game.owner.feedback', to: `owner.${stamp}@example.com`, title: 'رسالة', summary: 'x' }, ['sent']],
   ],
 };
 
@@ -88,24 +92,25 @@ for (const [slug, cases] of Object.entries(MATRIX)) {
     check(label, expected.includes(r.status), `got ${r.status ?? r.error ?? r.http}`);
   }
 
-  // Quota visibility: a project must be able to size its own batches.
-  const q = await fetch(`${BASE}/api/v1/quota?priority=3`, { headers: { Authorization: `Bearer ${KEYS[slug]}` } })
+  const q = await fetch(`${BASE}/api/v1/quota`, { headers: { Authorization: `Bearer ${KEYS[slug]}` } })
     .then((r) => r.json()).catch(() => ({}));
-  check('can read its own quota', typeof q.remaining_for_priority === 'number',
-    JSON.stringify(q.error ?? q.remaining_for_priority));
+  check('can read its own quota', typeof q.remaining === 'number', JSON.stringify(q.error ?? q.remaining));
   check('sees its own project limits only', q.project?.slug === slug, `reported ${q.project?.slug}`);
   console.log('');
 }
 
-// ── isolation: a key must not be usable for another project's events ────────
+// ── isolation ───────────────────────────────────────────────────────────────
 console.log('  isolation');
-const cross = await call('game', '/api/v1/send', {
-  event: 'medqize.otp.signup', to: `x.${stamp}@example.com`, subject: 'x', text: 'x',
-  sourceOrigin: PROD.game,
+const mine = await fetch(`${BASE}/api/v1/quota`, { headers: { Authorization: `Bearer ${KEYS.game}` } })
+  .then((r) => r.json());
+check("a project's quota view is scoped to itself", mine.project?.slug === 'game', JSON.stringify(mine.project?.slug));
+
+const stolen = await fetch(`${BASE}/api/v1/send`, {
+  method: 'POST',
+  headers: { Authorization: 'Bearer ek_live_medqize_not-a-real-key', 'Content-Type': 'application/json' },
+  body: JSON.stringify({ to: `x.${stamp}@example.com`, subject: 'x', text: 'x' }),
 });
-// game's best_priority is 1, so even naming SQB's P0 event cannot buy P0.
-check("game's key cannot obtain P0 by naming another project's event",
-  cross.priority === undefined || cross.priority >= 1, `priority=${cross.priority}`);
+check('a forged key is rejected', stolen.status === 401, `got ${stolen.status}`);
 
 console.log(`\n  ${passed} passed, ${failed} failed\n`);
 process.exit(failed === 0 ? 0 : 1);

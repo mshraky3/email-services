@@ -18,23 +18,31 @@
  * gateway.
  *
  * ───────────────────────────────────────────────────────────────────────────
- * THE FALLBACK RULE — the subtlest part of this file
+ * THE FALLBACK RULE
  *
- * Falling back on *any* error defeats the entire system. If the gateway says
- * "quota exhausted" and the project then sends via its own SMTP anyway, the
- * email goes out and the daily cap is blown while the ledger believes it is
- * under budget. That is worse than not having a gateway at all.
+ * Fall back only when the gateway did not process the request at all: network
+ * errors, timeouts, and 5xx. Everything else it decided deliberately, and
+ * sending the message some other way would override that decision.
  *
- * So the ONLY fallback-eligible failures are ones that mean "the gateway did
- * not process this": network errors, timeouts, and genuine 5xx. Explicitly NOT
- * eligible:
- *   429 project_daily_cap    the gateway decided; respect it
- *   503 quota_exhausted      a quota signal wearing a 5xx costume
- *   4xx validation           the payload is wrong; sending it elsewhere is worse
- *   200 suppressed/buffered/dropped/duplicate   these are SUCCESSES
+ * NOT fallback-eligible:
+ *   4xx validation   the payload is wrong; sending it elsewhere is worse
+ *   200 suppressed   that address bounced or complained — mailing it anyway
+ *                    damages a sending reputation shared by every project
+ *   200 dropped      a non-production origin; this is the localhost guard
+ *   200 throttled    an identical alert went out moments ago
+ *   200 duplicate    the idempotency key already sent
+ *
+ * (Earlier versions excluded 503 because it meant "quota exhausted" and
+ * falling back would have blown the shared cap. The gateway no longer refuses
+ * on quota — it switches to Gmail — so that exception is gone.)
  */
 
-const TERMINAL_OK = new Set(['sent', 'queued', 'buffered', 'suppressed', 'dropped', 'duplicate']);
+/**
+ * Outcomes that mean the gateway handled the request correctly. None of these
+ * should be retried, and none is an error — even though only 'sent' actually
+ * put an email in flight.
+ */
+const TERMINAL_OK = new Set(['sent', 'suppressed', 'dropped', 'throttled', 'duplicate']);
 
 export class GatewayError extends Error {
   constructor(kind, message, status, body) {
@@ -49,9 +57,9 @@ export class GatewayError extends Error {
 function isFallbackEligible(err) {
   if (!(err instanceof GatewayError)) return false;
   if (err.kind === 'network' || err.kind === 'timeout') return true;
-  // 503 is excluded deliberately: it is how the gateway reports quota
-  // exhaustion for P0, and falling back there would double-spend the budget.
-  return typeof err.status === 'number' && err.status >= 500 && err.status !== 503;
+  // 502 is the gateway saying "I tried and the transport failed", which is
+  // exactly when a project's own sender is worth a shot.
+  return typeof err.status === 'number' && err.status >= 500;
 }
 
 /**
@@ -126,7 +134,8 @@ export function createEmailClient(cfg) {
 
   return {
     /**
-     * Tier A — you already have the rendered HTML.
+     * Send an email. Returns once it has actually been sent — there is no
+     * queue and nothing to poll.
      *
      * Signature deliberately matches MEDQIZE's existing
      * backend/services/mailer.js `sendMail`, so migrating that project is an
@@ -145,16 +154,16 @@ export function createEmailClient(cfg) {
     },
 
     /**
-     * Many recipients, one payload. Returns 202 immediately with an honest
-     * schedule rather than blocking while N emails go out inline.
+     * Many recipients, one payload. Paced server-side and reported
+     * per-recipient, so a fan-out cannot time out the caller's own handler.
      */
     sendBulk(payload) {
       return viaGateway('/api/v1/send/bulk', payload);
     },
 
     /**
-     * Ask before generating work. Crons should size their batch from this
-     * instead of hardcoding a LIMIT that the gateway will only drop.
+     * How much Resend budget is left. Informational only — nothing is refused
+     * when it runs out, mail just goes over Gmail instead.
      */
     async quota({ priority } = {}) {
       const qs = priority === undefined ? '' : `?priority=${priority}`;

@@ -25,13 +25,15 @@ try {
   console.log(`\n  Schema applied. ${rows.length} tables:\n`);
   for (const r of rows) console.log(`    - ${r.table_name}`);
 
-  const { rows: policy } = await client.query(`SELECT priority, name, reserve, ceiling FROM quota_policy ORDER BY priority`);
-  console.log('\n  Priority classes:');
-  for (const p of policy) console.log(`    P${p.priority} ${p.name.padEnd(14)} reserve ${String(p.reserve).padStart(3)}  ceiling ${p.ceiling}`);
+  const { rows: ver } = await client.query(`SELECT v FROM schema_meta WHERE k = 'version'`);
+  console.log(`\n  Schema version: ${ver[0]?.v ?? '?'}`);
 
   const { rows: settings } = await client.query(`SELECT k, v FROM quota_settings ORDER BY k`);
   console.log('\n  Settings:');
   for (const s of settings) console.log(`    ${s.k.padEnd(20)} ${s.v}`);
+
+  console.log('\n  Mail is sent immediately on arrival — no queue, no scheduler.');
+  console.log('  daily_budget is the point at which Resend hands over to Gmail.');
   console.log('\n  Next: npm run db:seed\n');
 } finally {
   await client.end();
