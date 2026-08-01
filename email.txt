@@ -50,7 +50,8 @@ Ask the gateway admin (that's you) to register the project:
       "default_locale": "ar",
       "default_dir": "rtl",
       "best_priority": 1,
-      "daily_max": 30
+      "daily_max": 30,
+      "production_origins": ["myapp.com", "myapp.vercel.app"]
     }'
 
 You get back an API key ONCE:
@@ -65,6 +66,13 @@ recovered.
                     project genuinely has a blocking flow (OTP / password reset).
   daily_max         hard per-project cap. A runaway loop in your project eats
                     at most this much of the shared budget, never all of it.
+  production_origins  YOUR REAL HOSTNAMES. Mail arriving from anywhere else is
+                    DROPPED as dev traffic (see section 8). Forget this and
+                    every email you send disappears silently. You can set it
+                    later without redeploying the gateway:
+
+                      curl -X POST https://email-services-nu.vercel.app/api/admin                         -H "Authorization: Bearer $ADMIN_KEY"                         -H "Content-Type: application/json"                         -d '{"action":"set_origins","slug":"myapp",
+                             "production_origins":["myapp.com"]}'
 
 --------------------------------------------------------------------------------
 2. TWO ENV VARS + ONE FILE
@@ -268,8 +276,13 @@ Dropped: localhost, 127.0.0.1, ::1, *.local, 192.168.*, 10.*, tunnels, and
 Vercel preview deployments. Dropped messages are still RECORDED and visible in
 the dashboard — they are just never sent and never counted against quota.
 
-Production hostnames are listed in the gateway's PRODUCTION_ORIGINS env var.
-Add yours when you deploy, or your real mail gets dropped too.
+Your production hostnames live on YOUR project row (`production_origins`, set
+at registration or with the set_origins action above), merged with the
+gateway's global PRODUCTION_ORIGINS. Register yours when you deploy, or your
+real mail gets dropped too — no gateway redeploy needed.
+
+If mail is vanishing, this is the first thing to check: the dashboard shows
+those messages with status "dropped" and the reason.
 
 --------------------------------------------------------------------------------
 9. GOING LIVE SAFELY
