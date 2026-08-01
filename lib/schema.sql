@@ -293,7 +293,22 @@ CREATE TABLE IF NOT EXISTS drain_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_drain_runs ON drain_runs(started_at DESC);
 
+-- ───────────────────────── serverless-safe locking ───────────────────────
+-- A Postgres advisory lock is session-scoped, which is wrong for serverless:
+-- Vercel FREEZES a lambda the moment it returns a response, so a drain that
+-- was interrupted mid-flight keeps holding the lock until its TCP session
+-- eventually dies, blocking every other drainer in the meantime.
+--
+-- An expiring lease has no such failure mode. A dead holder simply stops
+-- renewing and the lease times out.
+CREATE TABLE IF NOT EXISTS gateway_locks (
+  name       TEXT PRIMARY KEY,
+  holder     TEXT NOT NULL,
+  acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL
+);
+
 -- Loud rather than silent drift. Bump when the DDL above changes shape.
 CREATE TABLE IF NOT EXISTS schema_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
-INSERT INTO schema_meta (k, v) VALUES ('version', '1')
+INSERT INTO schema_meta (k, v) VALUES ('version', '2')
   ON CONFLICT (k) DO UPDATE SET v = EXCLUDED.v;

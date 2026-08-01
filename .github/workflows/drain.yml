@@ -1,0 +1,40 @@
+name: Drain email queue
+
+# Vercel Hobby crons run at most ONCE PER DAY with +/-59 min precision, which is
+# useless for a queue. This workflow is the BACKUP scheduler — GitHub's free
+# cron is frequently 10-60 minutes late, so it must not be the only mechanism.
+#
+# Primary:   cron-job.org hitting POST /api/v1/drain every 5 minutes.
+# Also:      every authenticated API call drains opportunistically, so ordinary
+#            traffic keeps the queue moving on its own.
+#
+# Secrets required: GATEWAY_URL, DRAIN_SECRET
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: email-drain
+  cancel-in-progress: false
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Tick the queue
+        run: |
+          response=$(curl -sS -w '\n%{http_code}' -X POST \
+            "${{ secrets.GATEWAY_URL }}/api/v1/drain?source=gh-actions" \
+            -H "Authorization: Bearer ${{ secrets.DRAIN_SECRET }}" \
+            --max-time 120)
+          body=$(echo "$response" | head -n -1)
+          code=$(echo "$response" | tail -n 1)
+          echo "$body"
+          # A concurrent drain returns {"skipped":"locked"} and is a success.
+          if [ "$code" != "200" ]; then
+            echo "::error::drain failed with HTTP $code"
+            exit 1
+          fi

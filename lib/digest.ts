@@ -230,7 +230,11 @@ export async function flushOne(
   }>(
     `WITH frozen AS (
        UPDATE digest_buffer
-          SET status = 'flushing', flush_batch = $4
+          -- last_seen_at is restamped so it marks the FREEZE time, which is
+          -- what reclaimStrandedFlushes() measures staleness against. Without
+          -- this it would still hold the original buffering time and could
+          -- un-freeze a flush that is actively in progress.
+          SET status = 'flushing', flush_batch = $4, last_seen_at = NOW()
         WHERE digest_key = $1 AND lower(to_address) = lower($2)
           AND window_start = $3 AND status = 'buffered'
         RETURNING *
@@ -274,8 +278,38 @@ export async function flushOne(
   return true;
 }
 
+/**
+ * Recover buffers stranded mid-flush.
+ *
+ * `flushOne` freezes rows to 'flushing' and only marks them 'flushed' once the
+ * digest message exists. If the process dies in between — and on Vercel it can,
+ * because a lambda is frozen the moment it returns a response — those rows are
+ * invisible forever: `findDue` only ever looks at 'buffered'. That is silent,
+ * permanent mail loss, and it was observed on the live deployment.
+ *
+ * Reverting them to 'buffered' is safe. The freeze is the only thing that
+ * happened; nothing was sent, so nothing can be double-sent. Worst case the
+ * events land in a later digest.
+ */
+export async function reclaimStrandedFlushes(staleMinutes = 5): Promise<number> {
+  const rows = await query<{ id: string }>(
+    `UPDATE digest_buffer
+        SET status = 'buffered', flush_batch = NULL
+      WHERE status = 'flushing'
+        AND message_id IS NULL
+        AND last_seen_at < NOW() - ($1 || ' minutes')::interval
+      RETURNING id::text AS id`,
+    [String(staleMinutes)],
+  );
+  return rows.length;
+}
+
 /** Flush everything due. Returns how many digest emails were produced. */
 export async function flushDue(deps: FlushDeps, now = new Date()): Promise<number> {
+  // Recover anything a previous interrupted run left frozen, before deciding
+  // what is due — otherwise those events would never be seen again.
+  await reclaimStrandedFlushes();
+
   const due = await findDue(now);
   let sent = 0;
   for (const d of due) {

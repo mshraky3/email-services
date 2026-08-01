@@ -63,34 +63,49 @@ export async function tx<T>(fn: (c: PoolClient) => Promise<T>): Promise<T> {
 }
 
 /**
- * Single-flight guard for the drain loop.
+ * Single-flight guard for the drain loop, as an EXPIRING LEASE.
  *
  * Two drainers running at once would both claim rows and both pace their own
- * sends, doubling the effective request rate against Resend. `FOR UPDATE SKIP
- * LOCKED` already prevents double-sending the same row; this prevents the
+ * sends, doubling the effective request rate against the provider. `FOR UPDATE
+ * SKIP LOCKED` already prevents double-sending a row; this prevents the
  * rate-limit breach.
  *
- * Advisory locks are session-scoped, so the lock must be taken and released on
- * the SAME client — hence the explicit connection rather than `query()`.
+ * A `pg_try_advisory_lock` would be the obvious tool and is what this used to
+ * be — but it is session-scoped, and that is exactly wrong here. Vercel FREEZES
+ * a lambda the instant it returns a response, so an interrupted drain keeps
+ * holding the advisory lock until its TCP session eventually dies, blocking
+ * every other drainer until then. Observed live.
+ *
+ * A lease has no such failure mode: a dead holder stops renewing and the lease
+ * simply expires. `ttlSeconds` therefore bounds the worst-case stall.
  */
-export async function withAdvisoryLock<T>(
-  key: string,
+export async function withLease<T>(
+  name: string,
+  ttlSeconds: number,
   fn: () => Promise<T>,
 ): Promise<{ acquired: true; result: T } | { acquired: false; result: null }> {
-  const client = await pool().connect();
+  const holder = `${process.env.VERCEL_REGION ?? 'local'}:${Math.random().toString(36).slice(2, 10)}`;
+
+  // Take the lease only if nobody holds it, or the current holder's has expired.
+  const got = await query<{ holder: string }>(
+    `INSERT INTO gateway_locks (name, holder, acquired_at, expires_at)
+     VALUES ($1, $2, NOW(), NOW() + ($3 || ' seconds')::interval)
+     ON CONFLICT (name) DO UPDATE
+        SET holder = EXCLUDED.holder, acquired_at = NOW(), expires_at = EXCLUDED.expires_at
+      WHERE gateway_locks.expires_at < NOW()
+     RETURNING holder`,
+    [name, holder, String(ttlSeconds)],
+  );
+
+  if (got[0]?.holder !== holder) return { acquired: false, result: null };
+
   try {
-    const got = await client.query<{ ok: boolean }>(
-      'SELECT pg_try_advisory_lock(hashtext($1)) AS ok',
-      [key],
-    );
-    if (!got.rows[0]?.ok) return { acquired: false, result: null };
-    try {
-      return { acquired: true, result: await fn() };
-    } finally {
-      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [key]).catch(() => {});
-    }
+    return { acquired: true, result: await fn() };
   } finally {
-    client.release();
+    // Release early so the next tick does not have to wait out the TTL.
+    // Scoped to our own holder id so we can never release someone else's lease.
+    await query(`UPDATE gateway_locks SET expires_at = NOW() WHERE name = $1 AND holder = $2`, [name, holder])
+      .catch(() => {});
   }
 }
 

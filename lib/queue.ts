@@ -8,7 +8,7 @@
  * priority instead of one broadcast feature.
  */
 
-import { query, one, tx, withAdvisoryLock } from './db.ts';
+import { query, one, tx, withLease } from './db.ts';
 import {
   admit,
   type ClassPolicy,
@@ -331,7 +331,9 @@ export interface DrainOptions {
 export async function drain(opts: DrainOptions = {}): Promise<DrainResult> {
   const { source = 'cron', budgetMs = 25_000, flushDigests } = opts;
 
-  const outcome = await withAdvisoryLock('email:drain', async (): Promise<DrainResult> => {
+  // 90s lease: comfortably longer than the 25s work budget, short enough that
+  // a lambda frozen mid-drain cannot stall the queue for long.
+  const outcome = await withLease('email:drain', 90, async (): Promise<DrainResult> => {
     const started = Date.now();
     const settings = await loadSettings();
     const result: DrainResult = {

@@ -103,8 +103,11 @@ try {
     fetch(`${BASE}/api/v1/drain?source=concurrent-a`, { method: 'POST', headers: { Authorization: `Bearer ${DRAIN}` } }).then((r) => r.json()),
     fetch(`${BASE}/api/v1/drain?source=concurrent-b`, { method: 'POST', headers: { Authorization: `Bearer ${DRAIN}` } }).then((r) => r.json()),
   ]);
-  const skipped = [a, b].filter((r) => r.skipped === 'locked').length;
-  check('two simultaneous drains do not both run', skipped === 1,
+  // The invariant is "not both ran", not "exactly one ran". An opportunistic
+  // drain triggered by the enqueues above may already hold the lease, in which
+  // case BOTH explicit ticks correctly skip.
+  const ran = [a, b].filter((r) => r.skipped !== 'locked').length;
+  check('two simultaneous drains never both run', ran <= 1,
     `a=${JSON.stringify(a.skipped ?? a.sent)} b=${JSON.stringify(b.skipped ?? b.sent)}`);
 
   const { rows: dupes } = await db.query(
@@ -129,13 +132,20 @@ try {
     [digestAddr]);
   check(`${BUFFERED} events sit in the buffer, unsent`, buffered[0].n > 0, `buffered=${buffered[0].n}`);
 
-  await fetch(`${BASE}/api/v1/drain?source=verify-digest`, {
-    method: 'POST', headers: { Authorization: `Bearer ${DRAIN}` },
-  }).then((r) => r.json());
+  // Poll: the lease may be held by an opportunistic drain, and a single tick
+  // that returns {skipped:'locked'} is not a failure.
+  let digestMsgs = [];
+  for (let i = 0; i < 12; i++) {
+    await fetch(`${BASE}/api/v1/drain?source=verify-digest`, {
+      method: 'POST', headers: { Authorization: `Bearer ${DRAIN}` },
+    }).catch(() => {});
+    ({ rows: digestMsgs } = await db.query(
+      `SELECT id, subject, status, transport FROM messages
+        WHERE lower(to_address)=lower($1) AND digest_of IS NOT NULL`, [digestAddr]));
+    if (digestMsgs.length > 0) break;
+    await new Promise((r) => setTimeout(r, 3000));
+  }
 
-  const { rows: digestMsgs } = await db.query(
-    `SELECT id, subject, status, transport FROM messages
-      WHERE lower(to_address)=lower($1) AND digest_of IS NOT NULL`, [digestAddr]);
   check('the buffer collapsed into exactly ONE digest email', digestMsgs.length === 1,
     `produced ${digestMsgs.length}`);
   check('the digest went over Gmail, costing zero Resend quota',
