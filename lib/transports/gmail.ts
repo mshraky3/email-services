@@ -53,6 +53,14 @@ export function isConfigured(): boolean {
 }
 
 /**
+ * Authenticate without sending. Used by the preflight checks to prove the
+ * credentials work at zero cost.
+ */
+export async function verify(): Promise<void> {
+  await transport().verify();
+}
+
+/**
  * Release the SMTP socket.
  *
  * Only needed by one-shot CLI scripts: a lingering socket makes libuv abort on

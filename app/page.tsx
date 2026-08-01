@@ -89,13 +89,23 @@ export default async function Dashboard() {
 
   return (
     <main style={{ padding: '32px 24px', maxWidth: 1100, margin: '0 auto' }}>
-      <header style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 6 }}>
+      <header style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 6, flexWrap: 'wrap' }}>
         <h1 style={{ fontSize: 22, margin: 0 }}>Email Gateway</h1>
         {process.env.DRY_RUN === 'true' && (
           <span style={{ background: '#eab308', color: '#0b1021', borderRadius: 999, padding: '3px 12px', fontSize: 12, fontWeight: 700 }}>
             DRY RUN — nothing is being sent
           </span>
         )}
+        <a
+          href="/test"
+          style={{
+            marginInlineStart: 'auto', background: '#1d2a52', border: '1px solid #3b82f6',
+            color: '#93c5fd', borderRadius: 8, padding: '7px 14px', fontSize: 13,
+            fontWeight: 600, textDecoration: 'none',
+          }}
+        >
+          Send a test email
+        </a>
       </header>
       <p style={{ color: '#64748b', fontSize: 13, marginTop: 0 }}>
         Rolling 24h window. Only Resend sends are rationed — Gmail (owner mail) and dry-run sends are free.
