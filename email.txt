@@ -1,0 +1,302 @@
+================================================================================
+  CENTRAL EMAIL SYSTEM — HOW TO CONNECT A NEW PROJECT
+  Give this file to any new project. It is all you need.
+================================================================================
+
+WHAT THIS IS
+  One service that sends email for every project. You do not install a mail
+  library, you do not hold an API key for a mail provider, you do not write
+  SMTP config. You POST JSON to the gateway and it decides how and when to send.
+
+THE ONE HARD RULE
+  Never send email any other way. No nodemailer, no SMTP, no Resend SDK inside
+  your project. Every project sends from ONE verified domain on ONE free plan,
+  so a project that sends behind the gateway's back breaks the budget for
+  everyone and damages a sending reputation that all projects share.
+
+THE BUDGET, HONESTLY
+  Resend free tier = 100 emails/day and 3,000/month across ALL projects
+  combined. The gateway enforces 95/day to leave headroom. That is not much.
+  It is why priorities exist, why digests exist, and why some mail is
+  deliberately delayed or dropped. Read section 6 before you assume your email
+  will go out the second you ask for it.
+
+  Mail addressed to the OWNER (you) is routed over Gmail instead and costs
+  ZERO Resend quota. Mark it correctly and it is effectively free.
+
+--------------------------------------------------------------------------------
+1. GET REGISTERED
+--------------------------------------------------------------------------------
+Ask the gateway admin (that's you) to register the project:
+
+  curl -X POST https://<gateway>/api/admin \
+    -H "Authorization: Bearer $ADMIN_KEY" \
+    -H "Content-Type: application/json" \
+    -d '{
+      "action": "create_project",
+      "slug": "myapp",
+      "display_name": "My App",
+      "from_local_part": "myapp",
+      "default_from_name": "My App",
+      "default_locale": "ar",
+      "default_dir": "rtl",
+      "best_priority": 1,
+      "daily_max": 30
+    }'
+
+You get back an API key ONCE:
+
+  { "ok": true, "api_key": "ek_live_myapp_xxxxxxxxxxxx", "key_prefix": "..." }
+
+Store it now. It is only ever shown at creation. Lost keys are rotated, not
+recovered.
+
+  from_local_part   your mail arrives as  myapp@smle-question-bank.com
+  best_priority     the BEST priority you may request. Leave at 1 unless the
+                    project genuinely has a blocking flow (OTP / password reset).
+  daily_max         hard per-project cap. A runaway loop in your project eats
+                    at most this much of the shared budget, never all of it.
+
+--------------------------------------------------------------------------------
+2. TWO ENV VARS + ONE FILE
+--------------------------------------------------------------------------------
+In your project's .env (gitignored):
+
+  EMAIL_GATEWAY_URL=https://<gateway>
+  EMAIL_GATEWAY_KEY=ek_live_myapp_xxxxxxxxxxxx
+  EMAIL_GATEWAY_MODE=on
+
+Copy ONE file into your project — no npm install, no build step:
+
+  email-system/packages/email-client/email-client.js  ->  services/email-client.js
+
+Wire it up:
+
+  import { createEmailClient } from './services/email-client.js';
+
+  export const mail = createEmailClient({
+    baseUrl: process.env.EMAIL_GATEWAY_URL,
+    apiKey:  process.env.EMAIL_GATEWAY_KEY,
+    mode:    process.env.EMAIL_GATEWAY_MODE,   // 'off' | 'shadow' | 'on'
+  });
+
+--------------------------------------------------------------------------------
+3. REGISTER YOUR EVENT TYPES
+--------------------------------------------------------------------------------
+Every email your project sends needs a policy row. This is where priority,
+audience and digesting are decided — NOT in your code. Your code names an
+event; the gateway decides what that means.
+
+  curl -X POST https://<gateway>/api/admin \
+    -H "Authorization: Bearer $ADMIN_KEY" -H "Content-Type: application/json" \
+    -d '{
+      "action": "set_policy",
+      "slug": "myapp",
+      "event_type": "myapp.otp.login",
+      "priority": 0,
+      "audience": "user",
+      "delivery_mode": "immediate",
+      "honors_unsubscribe": false
+    }'
+
+Fields that matter:
+
+  priority        0..4 — see section 6
+  audience        "user"     mail to your users. Costs Resend quota.
+                  "owner"    mail to you. Routed to Gmail. Costs NOTHING.
+                  "internal" staff/admin recipients.
+  delivery_mode   "immediate" | "digest:hourly" | "digest:daily" | "suppress"
+  digest_key_template   which digest to join, e.g. "owner:daily"
+  dedupe_key_template   repeats with the same key increment a counter instead
+                        of piling up, e.g. "{{event_type}}:{{data.error_key}}"
+  escalate_when   bypass the digest when this matches, e.g. {"severity":["CRITICAL"]}
+  honors_unsubscribe    set FALSE for OTP and invoices. Nobody can unsubscribe
+                        from their own password reset.
+
+An UNREGISTERED event still sends — it just gets cautious defaults (P2,
+immediate). Register it anyway; the defaults are not what you want.
+
+--------------------------------------------------------------------------------
+4. SENDING — PICK A TIER
+--------------------------------------------------------------------------------
+
+TIER C — you have no template (START HERE if the project is new)
+  The gateway renders it. You never write email HTML, and you get correct
+  RTL Arabic for free.
+
+    await mail.send({
+      event: 'myapp.otp.login',
+      to: user.email,
+      template: 'otp',
+      data: { code: '4821', minutes: 5 },
+      idempotencyKey: `otp:${user.id}:${code}`,
+    });
+
+  Templates: 'otp' (a code) and 'notice' (heading + body + optional button).
+
+TIER B — an event that should be BUNDLED (all owner-facing mail)
+  You send structure, not HTML, because the gateway may merge this with other
+  events into one digest email. You cannot merge rendered HTML.
+
+    await mail.notify({
+      event: 'myapp.owner.new_signup',
+      to: OWNER_EMAIL,
+      title: 'New signup',
+      summary: 'ahmed@example.com joined',
+      severity: 'info',                 // 'info' | 'warn' | 'critical'
+      fields: [{ label: 'Plan', value: 'Free' }],
+      link: { label: 'Open in admin', url: 'https://myapp.com/admin/users/91' },
+      dedupeKey: 'myapp.signup',
+      sourceOrigin: req.headers.referer,
+    });
+
+TIER A — you already have rendered HTML
+  For existing projects with templates that already work. The gateway adds the
+  correct From, Reply-To and unsubscribe headers, and changes nothing else.
+
+    await mail.send({
+      event: 'myapp.invoice',
+      to: user.email,
+      subject: 'فاتورتك',
+      html: renderedHtml,
+      text: plainTextVersion,          // always include one: spam filters score it
+      attachments: [{ filename: 'invoice.pdf', content: pdfBase64,
+                      content_type: 'application/pdf' }],
+      idempotencyKey: `invoice:${invoiceNumber}`,
+    });
+
+--------------------------------------------------------------------------------
+5. READ THE RESPONSE PROPERLY — THIS IS THE PART PEOPLE GET WRONG
+--------------------------------------------------------------------------------
+  200 {"status":"sent"}        gone out
+  202 {"status":"queued"}      accepted, will send shortly.  THIS IS SUCCESS.
+  200 {"status":"buffered"}    folded into a digest.         THIS IS SUCCESS.
+  200 {"status":"suppressed"}  recipient bounced/complained/unsubscribed. SUCCESS.
+  200 {"status":"dropped"}     non-production origin (see section 8). SUCCESS.
+  200 {"status":"duplicate"}   you already sent this idempotency key. SUCCESS.
+
+  429 project_daily_cap        your project hit its own cap. Back off.
+  503 quota_exhausted          no budget left (P0 only). Show the code on screen
+                               instead of relying on email.
+  500 gateway_unavailable      the gateway itself is down. Retry or fall back.
+
+  NEVER retry a 2xx. NEVER treat suppressed/buffered/dropped as an error.
+  NEVER fall back to your own SMTP on 429 or 503 — that sends the email anyway
+  and blows the shared cap while the ledger thinks it is under budget.
+  (The supplied client already implements this rule correctly. Use it.)
+
+--------------------------------------------------------------------------------
+6. PRIORITIES — WHAT EACH ONE ACTUALLY PROMISES
+--------------------------------------------------------------------------------
+  P0  URGENT         OTP, password reset. A human is staring at a blocked
+                     screen. Sent inline, never queued, never dropped.
+                     25/day is reserved for P0 and NO amount of lower-priority
+                     traffic can take it.
+
+  P1  TRANSACTIONAL  invoices, receipts, "your request was answered". Sent
+                     within minutes. Retried for 24h, then dead-lettered.
+                     Never silently dropped.
+
+  P2  OPERATIONAL    admin alerts, contact forms, error reports. Usually
+                     digested. Delivered within hours.
+
+  P3  LIFECYCLE      welcome, re-engagement, reminders. Best effort.
+                     >>> DROPPED SILENTLY after 48h. <<<
+                     This is deliberate: a welcome email three days late, or a
+                     "you're on a 5-day streak" about a streak that already
+                     ended, is worse than no email.
+
+  P4  BULK           campaigns, announcements. Paced over days. Dropped after 30d.
+
+  You cannot request a better priority than your project's best_priority.
+  Do not label a newsletter P0. It will be clamped, and you will have made the
+  gateway's job harder for nothing.
+
+--------------------------------------------------------------------------------
+7. RULES FOR NOT BREAKING THINGS
+--------------------------------------------------------------------------------
+  DO NOT loop over recipients calling send(). Use sendBulk():
+
+    await mail.sendBulk({
+      event: 'myapp.announcement',
+      subject: 'إعلان',
+      html: body,
+      priority: 4,
+      recipients: ['a@x.com', { to: 'b@x.com', toName: 'Sara' }],
+    });
+
+    -> 202 { batch_id, accepted: 2, capacity_today: 40, scheduled_over: "today" }
+
+  ALWAYS pass an idempotencyKey on anything money- or account-related. It is
+  what stops a retry, a double-click or a re-run from sending twice.
+
+  ASK BEFORE BULK WORK. Do not hardcode a LIMIT in a cron job:
+
+    const q = await mail.quota({ priority: 3 });
+    const rows = await db.query('SELECT ... LIMIT $1', [Math.min(50, q.remaining_for_priority)]);
+
+  Generating 300 candidates a day against a 95/day budget just creates work to
+  be thrown away.
+
+  ALWAYS send a plain-text part alongside HTML. It measurably improves
+  deliverability, and all four existing projects already do it.
+
+  ATTACHMENTS: base64, max 2 MB per message and 3 MB per request. Above ~1 MB
+  host the file yourself and pass { filename, url } instead.
+
+--------------------------------------------------------------------------------
+8. THE ORIGIN GATE (why your dev machine stops emailing you)
+--------------------------------------------------------------------------------
+Running a frontend on localhost against the PRODUCTION backend used to fire
+real error emails — every dev-session stack trace landing in the inbox and
+burning shared quota.
+
+Pass the request origin and the gateway drops anything non-production:
+
+    sourceOrigin: req.headers.referer || req.headers.origin
+
+Dropped: localhost, 127.0.0.1, ::1, *.local, 192.168.*, 10.*, tunnels, and
+Vercel preview deployments. Dropped messages are still RECORDED and visible in
+the dashboard — they are just never sent and never counted against quota.
+
+Production hostnames are listed in the gateway's PRODUCTION_ORIGINS env var.
+Add yours when you deploy, or your real mail gets dropped too.
+
+--------------------------------------------------------------------------------
+9. GOING LIVE SAFELY
+--------------------------------------------------------------------------------
+  1. EMAIL_GATEWAY_MODE=off      nothing changes; your old sender still runs.
+  2. EMAIL_GATEWAY_MODE=shadow   your old sender still actually sends; the
+                                 gateway records what it WOULD have done.
+                                 Leave it here for about a week and compare.
+  3. EMAIL_GATEWAY_MODE=on       the gateway sends.
+
+  Rollback is setting the var back to `off`. No code change, no gateway
+  redeploy. If you are migrating an existing project, pass your current sender
+  as `legacy` so infrastructure failures fall back to it automatically:
+
+    createEmailClient({ ..., legacy: (payload) => oldSendMail(payload) })
+
+--------------------------------------------------------------------------------
+10. WHEN SOMETHING DOES NOT ARRIVE
+--------------------------------------------------------------------------------
+  Dashboard          https://<gateway>/            queue, quota, recent messages
+  One message        GET  /api/v1/messages/:id     status, provider id, events
+  Health             GET  /api/v1/health           queue depth, oldest pending
+  Quota              GET  /api/v1/quota            what is left, by priority
+
+  Check in this order:
+    status "dropped"     -> your sourceOrigin was not a production host
+    status "suppressed"  -> that address bounced, complained or unsubscribed
+    status "buffered"    -> it is in a digest; check flush_at
+    status "queued" old  -> the queue is not draining; check /api/v1/health
+    status "dead"        -> 5 attempts failed; read last_error, then retry from
+                            the admin API once you have fixed the cause
+    no record at all     -> your project did not reach the gateway. Check the
+                            key, the URL, and EMAIL_GATEWAY_MODE.
+
+================================================================================
+  Questions the gateway answers so you do not have to: how many can I send,
+  who bounced, did it arrive, what is queued, and what did it cost.
+  Ask it. Do not guess.
+================================================================================

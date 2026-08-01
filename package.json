@@ -1,0 +1,37 @@
+{
+  "name": "email-system",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Central email gateway for all sibling projects. Rations one Resend free-tier quota across many senders.",
+  "scripts": {
+    "dev": "next dev -p 3100",
+    "build": "next build",
+    "start": "next start -p 3100",
+    "lint": "next lint",
+    "test": "node --test \"tests/*.test.ts\"",
+    "db:init": "node scripts/db-init.mjs",
+    "db:seed": "node scripts/seed.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "audit:usage": "node scripts/audit-usage.mjs",
+    "reconcile": "node scripts/reconcile.mjs",
+    "verify:live": "node scripts/verify-live.mjs",
+    "preflight": "node scripts/preflight.mjs"
+  },
+  "dependencies": {
+    "next": "14.2.35",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "pg": "^8.13.1",
+    "nodemailer": "^7.0.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^18.3.17",
+    "@types/nodemailer": "^6.4.17",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
