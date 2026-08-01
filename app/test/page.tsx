@@ -6,8 +6,11 @@ import { useEffect, useState } from 'react';
  * Test-send page.
  *
  * Sends a REAL email on demand, bypassing DRY_RUN — a test page that respects
- * dry-run cannot answer the only question it exists for. Gmail is the default
- * transport so a test does not quietly spend the scarce Resend budget.
+ * dry-run cannot answer the only question it exists for.
+ *
+ * Defaults to Resend because that is the real delivery path: it is the only
+ * sender with the verified domain. Gmail is offered only to exercise the
+ * overflow valve that takes over when the daily budget is gone.
  *
  * The admin key is kept in sessionStorage only: it lives for the tab and is
  * never written to disk or into a URL.
@@ -53,7 +56,7 @@ export default function TestPage() {
   const [adminKey, setAdminKey] = useState('');
   const [to, setTo] = useState('');
   const [slug, setSlug] = useState('medqize');
-  const [transport, setTransport] = useState<'gmail' | 'resend'>('gmail');
+  const [transport, setTransport] = useState<'gmail' | 'resend'>('resend');
   const [sample, setSample] = useState('notice_ar');
   const [subject, setSubject] = useState('');
   const [html, setHtml] = useState('<h2>مرحبا</h2>\n<p>رسالة اختبار.</p>');
@@ -93,8 +96,9 @@ export default function TestPage() {
       <h1 style={{ fontSize: 22, margin: '10px 0 4px' }}>Send a test email</h1>
       <p style={{ color: '#64748b', fontSize: 13, marginTop: 0, lineHeight: 1.7 }}>
         Sends for real, even while the gateway is in <code>DRY_RUN</code> — otherwise it could not
-        tell you whether mail actually arrives. Gmail costs nothing; Resend spends 1 of the 100/day
-        budget and proves the verified domain.
+        tell you whether mail actually arrives. <strong>Resend</strong> is the real delivery path and
+        the one worth testing; it spends 1 of the 100/day budget. <strong>Gmail</strong> is only the
+        overflow valve for when that budget runs out, and is free but far more likely to land in spam.
       </p>
 
       <div style={{ ...CARD, marginTop: 20 }}>
@@ -128,8 +132,8 @@ export default function TestPage() {
           <label style={LABEL}>Transport</label>
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             {([
-              ['gmail', 'Gmail', 'free — owner mail path'],
-              ['resend', 'Resend', 'spends 1 of 100/day'],
+              ['resend', 'Resend', 'the real path — spends 1 of 100/day'],
+              ['gmail', 'Gmail', 'overflow only — free, but lands in spam'],
             ] as const).map(([id, label, hint]) => (
               <button
                 key={id} type="button" onClick={() => setTransport(id)}

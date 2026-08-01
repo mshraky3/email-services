@@ -12,8 +12,9 @@ Two projects already shared one Resend account, one API key and one verified dom
 
 A scheduler alone would just move the failure from "Resend 429s" to "the gateway dropped your email". Two things create real headroom, and they matter more than the scheduler:
 
-1. **Owner mail goes over Gmail.** Roughly a quarter of all traffic is the owner emailing himself (MEDQIZE's 9 owner notifications, HR-'s error reports, portfolio's 5 types). None of it needs the verified domain's reputation. `audience: 'owner'` routes to Gmail SMTP — 500/day on a separate quota — and costs **zero** Resend budget.
-2. **Digests.** ~25 owner emails/day collapse into 2, with repeats counted (`DB connection refused ×47`) instead of re-sent.
+**Resend carries everything.** It is the only sender with the verified domain, and therefore the only one that reliably reaches an inbox. Gmail SMTP is configured purely as an **overflow valve**: it takes over only when the daily Resend budget is exhausted, and only for P0–P2, on the principle that a message landing in spam still beats one that never left. P3/P4 simply wait for the budget to reset.
+
+That makes **digests** the main saving, not a secondary one: ~25 owner emails/day collapse into 2, with repeats counted (`DB connection refused ×47`) instead of re-sent. Without them the estate does not fit inside 100/day.
 
 ## The guarantee
 
@@ -68,8 +69,9 @@ GATEWAY_URL=http://localhost:3100 SMOKE_KEY=ek_live_medqize_... npm run verify:l
 ```
 
 - `preflight` validates the Resend key read-only (`GET /domains`, which also confirms the domain is verified) and authenticates Gmail with an SMTP handshake. No email, no quota.
-- `smoke` (20 checks) proves the decisions that can lose mail: the origin gate drops localhost, repeated errors buffer instead of sending, CRITICAL escalates out of the digest, a replayed idempotency key does not re-send, owner mail consumes no Resend quota.
-- `verify:live` (18 checks) exercises the machinery that only exists with a real database: claiming under `SKIP LOCKED`, the advisory lock under concurrent drains, the atomic digest freeze-flush, and webhook → suppression → withheld send. It cleans up after itself.
+- `smoke` (20 checks) proves the decisions that can lose mail: the origin gate drops localhost, repeated errors buffer instead of sending, CRITICAL escalates out of the digest, a replayed idempotency key does not re-send, and a dev-origin send is dropped.
+- `verify:live` (18 checks) exercises the machinery that only exists with a real database: claiming under `SKIP LOCKED`, the drain lease under concurrent ticks, the atomic digest freeze-flush, and webhook → suppression → withheld send. It cleans up after itself.
+- `verify:projects` (19 checks) asserts that every registered project's events get the treatment they are configured for, and that one project's key cannot buy another's priority.
 
 ## Deploying
 
@@ -83,7 +85,7 @@ Vercel Hobby crons run **at most once a day** (±59 min), which is useless for a
 2. **cron-job.org** every 5 min → `POST /api/v1/drain` with `Authorization: Bearer $DRAIN_SECRET`. This is the primary.
 3. **GitHub Actions** every 15 min (`.github/workflows/drain.yml`) as backup — its free cron is often 10–60 min late, so never rely on it alone.
 
-Overlapping ticks are a no-op via a Postgres advisory lock.
+Overlapping ticks are a no-op via an expiring database lease (not a session-scoped advisory lock — a frozen lambda would hold one of those until its TCP session died).
 
 ## API
 
@@ -110,8 +112,13 @@ No CORS layer and no URL allowlisting — every caller is server-to-server, so t
 - **Attachments are purged** 24h after a terminal status — invoices and subscriber reports are PII and must not accumulate here.
 - **Suppression is not binary.** A complaint or hard bounce blocks everything including OTP; an unsubscribe blocks P2–P4 only, because nobody can opt out of their own password reset.
 
+## Sending a test email
+
+`/test` on the dashboard sends a real message on demand, deliberately bypassing `DRY_RUN` — a test page that respects dry-run cannot tell you whether mail actually arrives. Pick a project (which sets the From identity), a template (OTP, owner digest, Arabic or English notice, or your own HTML), and a transport. Gated by `ADMIN_KEY`.
+
+`GET /api/admin/preflight` reports the readiness of the **running** instance — which env vars production actually has, whether the Resend key works and its domain is verified, whether Gmail authenticates. Read-only; costs nothing.
+
 ## Known gaps
 
-- **No real email has been sent yet.** Everything runs with `DRY_RUN=true`. Credentials are proven (Resend key valid, domain verified, Gmail authenticated) but the final hop — a message actually landing in an inbox — is unverified until you flip `DRY_RUN=false` and send one.
 - **Real volume is unmeasured.** Every quota number is inferred from reading the projects' source, not from counting actual sends. Run the shadow phase before trusting them; that is what the `daily_ceiling=40` migration setting exists for.
-- **`RESEND_WEBHOOK_SECRET` is a placeholder.** Replace it with Resend's real signing secret when you create the webhook endpoint, or bounce and complaint handling stays inert.
+- **The overflow valve is untested against a real exhausted budget.** Gmail takes over only when Resend's 100/day is gone, which has not happened yet.

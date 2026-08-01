@@ -30,8 +30,13 @@ THE BUDGET, HONESTLY
   deliberately delayed or dropped. Read section 6 before you assume your email
   will go out the second you ask for it.
 
-  Mail addressed to the OWNER (you) is routed over Gmail instead and costs
-  ZERO Resend quota. Mark it correctly and it is effectively free.
+  Resend sends everything. Gmail is configured only as an overflow valve for
+  when the daily budget runs out — it is free but far more likely to land in
+  spam, so nothing relies on it by choice.
+
+  What actually keeps the estate inside the budget is DIGESTING. Mark your
+  owner-facing mail with audience "owner" and a digest delivery_mode, and
+  twenty notifications become one email.
 
 --------------------------------------------------------------------------------
 1. GET REGISTERED
@@ -119,8 +124,9 @@ event; the gateway decides what that means.
 Fields that matter:
 
   priority        0..4 — see section 6
-  audience        "user"     mail to your users. Costs Resend quota.
-                  "owner"    mail to you. Routed to Gmail. Costs NOTHING.
+  audience        "user"     mail to your users.
+                  "owner"    mail to the operator — pair it with a digest
+                             delivery_mode and many events become one email.
                   "internal" staff/admin recipients.
   delivery_mode   "immediate" | "digest:hourly" | "digest:daily" | "suppress"
   digest_key_template   which digest to join, e.g. "owner:daily"

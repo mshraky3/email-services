@@ -33,19 +33,34 @@ export interface RouteInput {
   /** True when our own ledger or the provider says the Resend budget is gone. */
   resendExhausted: boolean;
   dryRun: boolean;
+  /**
+   * Best priority allowed to overflow onto Gmail once Resend is exhausted.
+   * Default 2: urgent, transactional and operational mail spills over; P3/P4
+   * are discretionary and simply wait for the budget to reset.
+   */
+  gmailFallbackMaxPriority?: Priority;
 }
 
 /**
  * Pick a transport.
  *
+ * RESEND IS THE PRIMARY SENDER. Everything goes over the verified domain,
+ * which is the only way mail reliably reaches an inbox — Gmail SMTP from a
+ * cloud host is unauthenticated for this domain, lands in spam, and has
+ * previously been hard-blocked outright (534 WebLoginRequired), which is why
+ * SQB abandoned it in the first place.
+ *
+ * GMAIL IS AN OVERFLOW VALVE, nothing more. It carries mail only when the
+ * Resend budget is actually gone, on the principle that a message landing in
+ * spam still beats one that never left.
+ *
  * Order of reasoning:
  *   1. Dry run wins over everything — shadow mode must never send.
- *   2. An explicit policy hint wins next (this is how portfolio stays on Gmail).
- *   3. Owner-facing mail goes to Gmail: zero Resend cost, and its deliverability
- *      characteristics only affect the owner's own inbox.
- *   4. Break-glass: a P0 with no Resend budget left goes over Gmail rather than
- *      failing. A password reset landing in spam beats one never arriving.
- *   5. Everything else is user-facing mail on the verified domain.
+ *   2. An explicit policy hint wins next, for the rare deliberate exception.
+ *   3. Resend budget exhausted + the message cannot wait -> Gmail.
+ *      P3/P4 are excluded: a streak reminder is not worth spending
+ *      deliverability on, and the queue will send it tomorrow.
+ *   4. Otherwise Resend.
  */
 export function pickTransport(input: RouteInput): TransportName {
   if (input.dryRun) return 'noop';
@@ -55,9 +70,10 @@ export function pickTransport(input: RouteInput): TransportName {
 
   if (input.transportHint && allow(input.transportHint)) return input.transportHint;
 
-  if (input.audience === 'owner' && allow('gmail')) return 'gmail';
-
-  if (input.priority === 0 && input.resendExhausted && allow('gmail')) return 'gmail';
+  const overflowLimit = input.gmailFallbackMaxPriority ?? 2;
+  if (input.resendExhausted && input.priority <= overflowLimit && allow('gmail')) {
+    return 'gmail';
+  }
 
   return 'resend';
 }

@@ -18,7 +18,7 @@ All four projects are now wired to the gateway at `https://email-services-nu.ver
 | `backend/app.js` | `sendEmail(...)` gained an optional 5th `opts` argument (additive — existing calls unchanged); OTP, admin-account, test-email and temp-link sends now name their event |
 | `backend/.env` | added `EMAIL_GATEWAY_URL`, `EMAIL_GATEWAY_KEY`, `EMAIL_GATEWAY_MODE=shadow` |
 
-What it buys: the 9 owner-notification types now ride Gmail and cost **zero Resend quota**, error reports collapse into an hourly digest, and dev-origin error mail is dropped.
+What it buys: error reports collapse into an hourly digest (`×47` instead of 47 emails), the 9 owner-notification types fold into the shared daily digest, and dev-origin error mail is dropped entirely.
 
 ## HR-
 
@@ -39,7 +39,7 @@ Note: HR- has a git repo with ~213 uncommitted files predating this work. Review
 | `backend/api.js` | `Email.sendMail(...)` → `sendMail(...)`, a thin gateway wrapper with the same argument shape; each of the 5 sends tagged with its event |
 | `backend/.env` | added the three gateway variables |
 
-All 5 of its emails go to you, so they're all `audience: 'owner'` → Gmail → **zero Resend quota**, while still being logged and digested with everything else. Contact-form and resume pings now fold into the daily digest; both cron emails stay immediate.
+All 5 of its emails go to you, so they're all `audience: 'owner'` and share the estate-wide daily digest. Contact-form and resume pings fold into it; both cron emails stay immediate.
 
 ## game (te3rafni)
 

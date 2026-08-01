@@ -7,9 +7,12 @@
  * projects' source, and the priority/audience/delivery_mode columns encode the
  * decisions that make 100 emails/day survivable:
  *
- *   - audience 'owner'  -> routed to Gmail, costs ZERO Resend quota
- *   - delivery_mode 'digest:*' -> collapsed into 2 emails/day
+ *   - delivery_mode 'digest:*' -> ~25 owner emails/day collapse into 2
  *   - escalate_when     -> CRITICAL still arrives instantly
+ *
+ * Resend carries everything; Gmail is only an overflow valve for when the
+ * daily budget runs out. That makes the digests the main saving, not a
+ * secondary one — they are what keeps the whole estate inside 100/day.
  *
  * Re-running is safe: projects and policies upsert, and API keys are only
  * minted for projects that do not have one yet.
@@ -63,22 +66,22 @@ const POLICIES = {
     P('medqize.question_report.corrected',  1, 'user', 'immediate'),
     P('medqize.question_report.confirmed',  1, 'user', 'immediate'),
 
-    // P2 owner-facing: Gmail transport + daily digest. This block is the single
-    // biggest quota recovery in the whole system.
-    P('medqize.owner.admin_account_created', 2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('medqize.owner.temp_link_account',     2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('medqize.owner.contact_form',          2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('medqize.owner.suggestion',            2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('medqize.owner.question_report_filed', 2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('medqize.owner.test_email',            2, 'owner', 'immediate',     { transport: 'gmail' }),
+    // P2 owner-facing: bundled into the shared daily digest. ~25 separate
+    // emails a day become 2, which is the single biggest quota saving here.
+    P('medqize.owner.admin_account_created', 2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('medqize.owner.temp_link_account',     2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('medqize.owner.contact_form',          2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('medqize.owner.suggestion',            2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('medqize.owner.question_report_filed', 2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('medqize.owner.test_email',            2, 'owner', 'immediate',     {}),
     // Money arriving is worth an interruption.
-    P('medqize.owner.payment_received',      2, 'owner', 'digest:hourly', { digest: OWNER_HOURLY, transport: 'gmail' }),
+    P('medqize.owner.payment_received',      2, 'owner', 'digest:hourly', { digest: OWNER_HOURLY }),
     // Has a PDF attachment, so it cannot be merged into a digest body.
-    P('medqize.owner.subscriptions_report',  2, 'owner', 'immediate',     { transport: 'gmail' }),
+    P('medqize.owner.subscriptions_report',  2, 'owner', 'immediate',     {}),
     // Repeats increment instead of re-sending: "DB connection refused x47".
     P('medqize.owner.backend_error',         2, 'owner', 'digest:hourly', {
       digest: OWNER_HOURLY, dedupe: '{{data.error_key}}', threshold: 25,
-      escalate: CRITICAL_ONLY, escalatedPriority: 1, transport: 'gmail',
+      escalate: CRITICAL_ONLY, escalatedPriority: 1,
     }),
 
     // P3 lifecycle: perishable. A 3-day-late welcome is worse than none.
@@ -89,9 +92,9 @@ const POLICIES = {
 
     // P4 bulk.
     P('medqize.broadcast.campaign',   4, 'user',  'immediate'),
-    P('medqize.broadcast.test',       4, 'owner', 'immediate', { transport: 'gmail' }),
+    P('medqize.broadcast.test',       4, 'owner', 'immediate', {}),
     P('medqize.campaign.free_era',    4, 'user',  'immediate'),
-    P('medqize.campaign.free_era_preview', 4, 'owner', 'immediate', { transport: 'gmail' }),
+    P('medqize.campaign.free_era_preview', 4, 'owner', 'immediate', {}),
   ],
 
   // ── HR- — 19 types ────────────────────────────────────────────────────────
@@ -104,17 +107,17 @@ const POLICIES = {
     P('hr.request.answered_branch', 1, 'user', 'immediate'),
     P('hr.suggestion.updated',      1, 'user', 'immediate'),
 
-    P('hr.owner.daily_critical_stats', 2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('hr.owner.expiry_summary',       2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('hr.owner.notification_created', 2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('hr.owner.branch_replied',       2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('hr.owner.new_request',          2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('hr.owner.new_suggestion',       2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('hr.owner.email_update_request', 2, 'owner', 'digest:daily',  { digest: OWNER_DAILY,  transport: 'gmail' }),
-    P('hr.owner.test_email',           2, 'owner', 'immediate',     { transport: 'gmail' }),
+    P('hr.owner.daily_critical_stats', 2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('hr.owner.expiry_summary',       2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('hr.owner.notification_created', 2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('hr.owner.branch_replied',       2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('hr.owner.new_request',          2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('hr.owner.new_suggestion',       2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('hr.owner.email_update_request', 2, 'owner', 'digest:daily',  { digest: OWNER_DAILY }),
+    P('hr.owner.test_email',           2, 'owner', 'immediate',     {}),
     P('hr.owner.system_error',         2, 'owner', 'digest:hourly', {
       digest: OWNER_HOURLY, dedupe: '{{data.error_key}}',
-      escalate: CRITICAL_ONLY, escalatedPriority: 1, transport: 'gmail',
+      escalate: CRITICAL_ONLY, escalatedPriority: 1,
     }),
 
     // The six fan-out loops. Each is O(branches) per admin action and is the
@@ -127,20 +130,20 @@ const POLICIES = {
     P('hr.branch.new_term',        3, 'user', 'immediate'),
   ],
 
-  // ── portfolio — 5 types, ALL owner-facing, ALL on Gmail => 0 Resend quota ──
+  // ── portfolio — 5 types, all owner-facing, mostly digested ──────────────
   portfolio: [
-    P('portfolio.owner.contact_form',    2, 'owner', 'digest:daily', { digest: OWNER_DAILY, transport: 'gmail' }),
+    P('portfolio.owner.contact_form',    2, 'owner', 'digest:daily', { digest: OWNER_DAILY }),
     P('portfolio.owner.resume_download', 2, 'owner', 'digest:daily', {
-      digest: OWNER_DAILY, dedupe: 'portfolio.resume', transport: 'gmail',
+      digest: OWNER_DAILY, dedupe: 'portfolio.resume',
     }),
-    P('portfolio.owner.job_digest',      2, 'owner', 'immediate', { transport: 'gmail' }),
-    P('portfolio.owner.evening_checkin', 2, 'owner', 'immediate', { transport: 'gmail' }),
-    P('portfolio.owner.email_jobs',      1, 'owner', 'immediate', { transport: 'gmail' }),
+    P('portfolio.owner.job_digest',      2, 'owner', 'immediate', {}),
+    P('portfolio.owner.evening_checkin', 2, 'owner', 'immediate', {}),
+    P('portfolio.owner.email_jobs',      1, 'owner', 'immediate', {}),
   ],
 
   // ── game — greenfield, Tier C templates only ──────────────────────────────
   game: [
-    P('game.owner.feedback', 2, 'owner', 'digest:daily', { digest: OWNER_DAILY, transport: 'gmail' }),
+    P('game.owner.feedback', 2, 'owner', 'digest:daily', { digest: OWNER_DAILY }),
   ],
 };
 
@@ -215,7 +218,10 @@ try {
   }
   const total = counts.reduce((n, c) => n + c.events, 0);
   const owner = counts.reduce((n, c) => n + c.owner_events, 0);
-  console.log(`\n    ${total} event types total; ${owner} route to Gmail and cost ZERO Resend quota.`);
+  const digested = counts.reduce((n, c) => n + c.digested, 0);
+  console.log(`\n    ${total} event types total. ${owner} owner-facing, ${digested} digested —`);
+  console.log(`    the digests are what keep the estate inside 100 Resend emails/day.`);
+  console.log(`    Resend carries everything; Gmail only catches overflow when the budget runs out.`);
 
   if (issued.length) {
     console.log('\n  API keys (shown ONCE — store them in each project\'s env now):\n');

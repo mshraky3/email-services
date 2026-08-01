@@ -168,9 +168,10 @@ export const flushDeps: FlushDeps = {
       project, policy, priority: 2,
       req: { to: toAddress, subject, dir: 'ltr', locale: 'en' },
       subject, html, text,
-      // Owner-facing: Gmail, so a digest never spends Resend budget.
+      // Digests go over Resend like everything else; Gmail only catches them
+      // if the budget is already gone.
       transport: pickTransport({
-        audience: 'owner', priority: 2, transportHint: 'gmail',
+        audience: 'owner', priority: 2, transportHint: null,
         allowedTransports: project.allowed_transports, resendExhausted: false,
         dryRun: process.env.DRY_RUN === 'true' || project.dry_run,
       }),
