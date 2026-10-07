@@ -6,7 +6,7 @@
 export type Priority = 0 | 1 | 2 | 3 | 4;
 
 export type Audience = 'owner' | 'internal' | 'user';
-export type TransportName = 'resend' | 'gmail' | 'noop';
+export type TransportName = 'resend' | 'resend2' | 'gmail' | 'noop';
 export type Severity = 'info' | 'warn' | 'critical';
 
 /**

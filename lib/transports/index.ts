@@ -19,14 +19,15 @@ async function noopSend(msg: OutboundMessage): Promise<SendResult> {
 
 export const transports: Record<TransportName, (m: OutboundMessage) => Promise<SendResult>> = {
   resend: resend.send,
+  resend2: resend.send2,
   gmail: gmail.send,
   noop: noopSend,
 };
 
-/** Only Resend sends are counted against the daily budget. */
+/** Only Resend sends are counted against a daily budget (each lane has its own). */
 export function countsAgainstQuota(transport: TransportName): boolean {
-  return transport === 'resend';
+  return transport === 'resend' || transport === 'resend2';
 }
 
-export { lastRateLimit } from './resend.ts';
+export { lastRateLimit, isConfigured2 as resend2Configured } from './resend.ts';
 export { isConfigured as gmailConfigured } from './gmail.ts';

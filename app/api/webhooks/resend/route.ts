@@ -24,9 +24,14 @@ export const dynamic = 'force-dynamic';
 const TOLERANCE_SECONDS = 5 * 60;
 
 function verifySignature(body: string, headers: Headers): boolean {
-  const secret = process.env.RESEND_WEBHOOK_SECRET;
-  if (!secret) return false;
+  // Two Resend accounts, each with its own webhook signing secret: a payload is
+  // genuine if it verifies against EITHER.
+  return [process.env.RESEND_WEBHOOK_SECRET, process.env.RESEND_WEBHOOK_SECRET_2]
+    .filter((s): s is string => Boolean(s))
+    .some((secret) => verifyWith(secret, body, headers));
+}
 
+function verifyWith(secret: string, body: string, headers: Headers): boolean {
   const id = headers.get('svix-id');
   const timestamp = headers.get('svix-timestamp');
   const signature = headers.get('svix-signature');

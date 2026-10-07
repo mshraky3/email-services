@@ -52,9 +52,29 @@ function classify(status: number, body: string): TransportError {
   return new TransportError('validation', `Resend ${status}: ${body.slice(0, 300)}`, status);
 }
 
-export async function send(msg: OutboundMessage): Promise<SendResult> {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) throw new TransportError('validation', 'RESEND_API_KEY is not set');
+/**
+ * Two independent Resend accounts, each with its own API key, verified domain and
+ * 100/day allowance. Account 2 (RESEND_API_KEY_2 + MAIL_DOMAIN_2) is optional and
+ * only used once account 1's daily budget is spent (see lib/transport-choice.ts).
+ */
+export type ResendLane = 'resend' | 'resend2';
+
+export function isConfigured2(): boolean {
+  return Boolean(process.env.RESEND_API_KEY_2 && process.env.MAIL_DOMAIN_2);
+}
+
+export function send(msg: OutboundMessage): Promise<SendResult> {
+  return sendVia('resend', msg);
+}
+
+export function send2(msg: OutboundMessage): Promise<SendResult> {
+  return sendVia('resend2', msg);
+}
+
+async function sendVia(lane: ResendLane, msg: OutboundMessage): Promise<SendResult> {
+  const keyName = lane === 'resend2' ? 'RESEND_API_KEY_2' : 'RESEND_API_KEY';
+  const apiKey = process.env[keyName];
+  if (!apiKey) throw new TransportError('validation', `${keyName} is not set`);
 
   const payload: Record<string, unknown> = {
     from: msg.from,
@@ -120,5 +140,5 @@ export async function send(msg: OutboundMessage): Promise<SendResult> {
   } catch {
     /* a 2xx with an unparseable body still counts as sent */
   }
-  return { id, transport: 'resend' };
+  return { id, transport: lane };
 }

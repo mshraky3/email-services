@@ -23,7 +23,8 @@
 import { one, query } from './db.ts';
 import { judgeOrigin } from './origin.ts';
 import { checkSuppressed } from './suppression.ts';
-import { transports } from './transports/index.ts';
+import { transports, resend2Configured, type OutboundMessage } from './transports/index.ts';
+import { chooseTransport, mailDomainFor } from './transport-choice.ts';
 import { isConfigured as gmailConfigured } from './transports/gmail.ts';
 import { listUnsubscribeHeaders } from './unsubscribe.ts';
 import { noticeTemplate, otpTemplate, shell } from './render.ts';
@@ -106,18 +107,27 @@ async function resolvePolicy(projectId: number, event: string): Promise<Policy> 
 // ── quota: one count, one decision ──────────────────────────────────────────
 
 async function currentQuota() {
-  const [used, budgetRow] = await Promise.all([
+  const [used, used2, budgetRow] = await Promise.all([
     one<{ n: string }>(
       `SELECT COUNT(*)::text AS n FROM messages
         WHERE transport = 'resend' AND status IN ('sent','sending')
           AND COALESCE(sent_at, created_at) > NOW() - INTERVAL '24 hours'`,
     ),
+    // The second Resend account has its own 100/day allowance, counted on its own.
+    resend2Configured()
+      ? one<{ n: string }>(
+          `SELECT COUNT(*)::text AS n FROM messages
+            WHERE transport = 'resend2' AND status IN ('sent','sending')
+              AND COALESCE(sent_at, created_at) > NOW() - INTERVAL '24 hours'`,
+        )
+      : Promise.resolve(null),
     one<{ v: string }>(`SELECT v FROM quota_settings WHERE k = 'daily_budget'`),
   ]);
-  return evaluate({
-    usedToday: Number(used?.n ?? 0),
-    budget: Number(budgetRow?.v ?? DEFAULT_DAILY_BUDGET),
-  });
+  const budget = Number(budgetRow?.v ?? DEFAULT_DAILY_BUDGET);
+  return {
+    ...evaluate({ usedToday: Number(used?.n ?? 0), budget }),
+    resend2Available: evaluate({ usedToday: Number(used2?.n ?? 0), budget }).resendAvailable,
+  };
 }
 
 /**
@@ -126,13 +136,19 @@ async function currentQuota() {
  * when the daily budget is genuinely spent: unauthenticated for this domain and
  * far more likely to land in spam, but a message in spam beats one never sent.
  */
-function pickTransport(policy: Policy, project: ProjectRow, resendAvailable: boolean, dryRun: boolean): TransportName {
-  if (dryRun) return 'noop';
+function pickTransport(policy: Policy, project: ProjectRow, resendAvailable: boolean, resend2Available: boolean, dryRun: boolean): TransportName {
   const allowed = (t: TransportName) =>
-    project.allowed_transports.includes(t) && (t !== 'gmail' || gmailConfigured());
-  if (policy.transport_hint && allowed(policy.transport_hint)) return policy.transport_hint;
-  if (!resendAvailable && allowed('gmail')) return 'gmail';
-  return 'resend';
+    (t === 'resend2'
+      ? project.allowed_transports.includes('resend') && resend2Configured()
+      : project.allowed_transports.includes(t)) && (t !== 'gmail' || gmailConfigured());
+  return chooseTransport({
+    dryRun,
+    hint: policy.transport_hint,
+    allowed,
+    resendAvailable,
+    resend2Configured: resend2Configured(),
+    resend2Available,
+  });
 }
 
 // ── flood cooldown ──────────────────────────────────────────────────────────
@@ -247,9 +263,10 @@ export async function send(project: ProjectRow, req: SendRequest): Promise<SendO
   // ── transport ──
   const quota = await currentQuota();
   const dryRun = process.env.DRY_RUN === 'true' || project.dry_run;
-  const transport = pickTransport(policy, project, quota.resendAvailable, dryRun);
+  const transport = pickTransport(policy, project, quota.resendAvailable, quota.resend2Available, dryRun);
 
-  const domain = process.env.MAIL_DOMAIN || 'localhost';
+  // Each Resend account sends only from the domain it verified.
+  const domain = mailDomainFor(transport);
   const fromAddress = `${project.from_local_part}@${domain}`;
   const headers: Record<string, string> = { ...(req.headers ?? {}) };
   if (req.bulk && policy.honors_unsubscribe) {
@@ -302,7 +319,7 @@ async function deliver(
   transport: TransportName,
   project: ProjectRow,
 ): Promise<SendOutcome> {
-  const outbound = {
+  const outbound: OutboundMessage = {
     from: `"${row.from_name}" <${row.from_address}>`,
     to: row.to_address,
     replyTo: row.reply_to,
@@ -330,7 +347,17 @@ async function deliver(
 
       // Provider says the budget is gone — switch to Gmail and try again
       // immediately rather than failing. This is the whole fallback story.
-      if (te.kind === 'quota' && transport === 'resend' && project.allowed_transports.includes('gmail') && gmailConfigured()) {
+      // Account 1 out of budget at the provider: try account 2 (re-addressed to its own
+      // verified domain) before Gmail.
+      if (te.kind === 'quota' && transport === 'resend' && resend2Configured() && project.allowed_transports.includes('resend')) {
+        transport = 'resend2';
+        const local = outbound.from.match(/<([^@>]+)@/)?.[1] ?? project.from_local_part;
+        const from2 = `${local}@${mailDomainFor('resend2')}`;
+        outbound.from = `"${row.from_name}" <${from2}>`;
+        await query(`UPDATE messages SET transport='resend2', from_address=$2 WHERE id=$1`, [row.id, from2]);
+        continue;
+      }
+      if (te.kind === 'quota' && (transport === 'resend' || transport === 'resend2') && project.allowed_transports.includes('gmail') && gmailConfigured()) {
         transport = 'gmail';
         await query(`UPDATE messages SET transport='gmail' WHERE id=$1`, [row.id]);
         continue;
