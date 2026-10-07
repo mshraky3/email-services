@@ -56,7 +56,7 @@ export default function TestPage() {
   const [adminKey, setAdminKey] = useState('');
   const [to, setTo] = useState('');
   const [slug, setSlug] = useState('medqize');
-  const [transport, setTransport] = useState<'gmail' | 'resend'>('resend');
+  const [transport, setTransport] = useState<'gmail' | 'resend' | 'resend2'>('resend');
   const [sample, setSample] = useState('notice_ar');
   const [subject, setSubject] = useState('');
   const [html, setHtml] = useState('<h2>مرحبا</h2>\n<p>رسالة اختبار.</p>');
@@ -133,6 +133,7 @@ export default function TestPage() {
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
             {([
               ['resend', 'Resend', 'the real path — spends 1 of 100/day'],
+              ['resend2', 'Resend #2', 'second account on the second domain — spends 1 of its own 100/day'],
               ['gmail', 'Gmail', 'overflow only — free, but lands in spam'],
             ] as const).map(([id, label, hint]) => (
               <button
@@ -194,11 +195,11 @@ export default function TestPage() {
             marginTop: 22, width: '100%', padding: '13px', borderRadius: 9, border: 'none',
             fontSize: 15, fontWeight: 700, fontFamily: 'inherit',
             cursor: ready && !busy ? 'pointer' : 'not-allowed',
-            background: ready && !busy ? (transport === 'resend' ? '#b45309' : '#2563eb') : '#1e2544',
+            background: ready && !busy ? (transport === 'resend' || transport === 'resend2' ? '#b45309' : '#2563eb') : '#1e2544',
             color: ready && !busy ? '#fff' : '#64748b',
           }}
         >
-          {busy ? 'Sending…' : transport === 'resend' ? 'Send via Resend (costs 1)' : 'Send via Gmail (free)'}
+          {busy ? 'Sending…' : transport === 'resend' ? 'Send via Resend (costs 1)' : transport === 'resend2' ? 'Send via Resend #2 (costs 1)' : 'Send via Gmail (free)'}
         </button>
       </div>
 
