@@ -3,6 +3,7 @@ import { guard } from '@/lib/route.ts';
 import { checkSecret } from '@/lib/auth.ts';
 import { ensureSchema, one, query } from '@/lib/db.ts';
 import { transports } from '@/lib/transports/index.ts';
+import { mailDomainFor } from '@/lib/transport-choice.ts';
 import { digestTemplate, noticeTemplate, otpTemplate, shell } from '@/lib/render.ts';
 import { DEFAULT_DAILY_BUDGET, evaluate } from '@/lib/quota.ts';
 import type { ProjectRow, TransportName } from '@/lib/types.ts';
@@ -169,7 +170,7 @@ export const POST = guard(async (req: Request) => {
       from: `"${project.default_from_name}" <${fromAddress}>`,
       to,
       subject,
-      cost: transport === 'resend' ? '1 Resend email' : 'nothing — Gmail is a separate quota',
+      cost: transport === 'resend' || transport === 'resend2' ? `1 ${transport === 'resend2' ? 'second-account ' : ''}Resend email` : 'nothing — Gmail is a separate quota',
       quota: { used: q.usedToday, budget: q.budget, remaining: q.remaining },
     });
   } catch (err) {
