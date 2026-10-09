@@ -123,7 +123,7 @@ export const POST = guard(async (req: Request) => {
   // Gmail unless Resend is explicitly asked for: a test should not quietly
   // spend the scarce budget.
   const transport: TransportName = body.transport ?? 'gmail';
-  const domain = process.env.MAIL_DOMAIN || 'localhost';
+  const domain = mailDomainFor(transport);
   const fromAddress = `${project.from_local_part}@${domain}`;
 
   // Record before sending, so a send that succeeds but whose response is lost
